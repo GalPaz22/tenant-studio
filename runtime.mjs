@@ -1,10 +1,17 @@
 import {processProduct,autocomplete} from './core/core.mjs';
 import {createSearchService} from './core/semantic.mjs';
 import {generate} from './core/gemini.mjs';
+import {processGarmin} from './tenants/garmin/index.mjs';
 export function createDraftRuntime(project,revision) {
  const profile={...revision.profile,tenantId:project.id,platform:project.platform,sourceUrl:project.url,version:`studio-${revision.number}`,publishedStatuses:['ACTIVE','publish'],indexPlan:{text:['title'],filter:['productType','colors','finishes','price','stockStatus'],exact:['id','sku']}};
+ const classifiedTags=new Map();
+ for(const [tag,assignment] of Object.entries(project.tagAssignments||{}))
+  for(const id of assignment.matchedIds||[]){if(!classifiedTags.has(id))classifiedTags.set(id,[]);classifiedTags.get(id).push(tag)}
  const products=project.catalog.products.map(raw=>{
-  const p=processProduct(raw,profile);p.badges=Array.isArray(raw.badges)?raw.badges:[];
+  if(new URL(project.url).hostname.replace(/^www\./,'')==='garmin.co.il')raw=processGarmin(raw);
+  raw={...raw,tags:[...new Set([...(raw.tags||[]),...(raw.siteTags||[]),...(classifiedTags.get(String(raw.id))||[])])]};
+  const p=processProduct(raw,profile);p.badges=Array.isArray(raw.badges)?raw.badges.map(b=>({...b})):[];
+  if(raw.garmin){p.finishes=raw.garmin.finishes||[];p.garmin=raw.garmin;if(raw.garmin.accessory)p.productType=profile.productTypes.band?.categories.some(c=>p.categories.includes(c))?'band':null;}
   for(const r of profile.badgeRules)if((raw[r.field]||[]).includes(r.value)&&!p.badges.some(b=>b.text===r.text))p.badges.push({text:r.text,kind:'merchant',order:r.order,source:'tenant-rule'});
   p.badges.sort((a,b)=>(a.order||0)-(b.order||0));return p;
  });

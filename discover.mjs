@@ -26,21 +26,33 @@ function product(raw,platform,origin) {
  if(platform==='shopify')return {id:String(raw.id),name:raw.title,url:origin+'/products/'+raw.handle,image:raw.images?.[0]?.src,price:Number(raw.variants?.[0]?.price),regularPrice:Number(raw.variants?.[0]?.compare_at_price)||null,stockStatus:raw.variants?.some(v=>v.available)?'instock':'outofstock',status:'ACTIVE',categories:[raw.product_type].filter(Boolean),tags:typeof raw.tags==='string'?raw.tags.split(',').map(x=>x.trim()):raw.tags||[]};
  return {id:String(raw.id),name:text(raw.name),url:raw.permalink,image:raw.images?.[0]?.src,price:Number(raw.prices?.price)/10**(raw.prices?.currency_minor_unit??2),regularPrice:Number(raw.prices?.regular_price)/10**(raw.prices?.currency_minor_unit??2),currency:raw.prices?.currency_code,stockStatus:raw.is_in_stock?'instock':'outofstock',status:'ACTIVE',categories:raw.categories?.map(c=>text(c.name))||[],tags:raw.tags?.map(t=>text(t.name))||[]};
 }
-export async function discover(url,platform,report=()=>{}) {
+export async function discover(url,platform,report=()=>{},fetchSource=fetchPublic,{maxProducts=500}={}) {
+ if(!Number.isInteger(maxProducts)||maxProducts<1||maxProducts>10000)throw Error('Invalid catalog limit');
+ let complete=false;
  const origin=new URL(url).origin;report('קריאת האתר והקטלוג הציבורי');
- const html=await fetchPublic(url);const title=text(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]||new URL(url).hostname);
+ const html=await fetchSource(url);const title=text(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]||new URL(url).hostname);
  let products=[],warnings=[];
  if(['woocommerce','shopify'].includes(platform)) {
-  for(let page=1;page<=5;page++){
+  let pageSize=25,page=1;
+  for(let attempt=0;attempt<maxProducts/5+5&&products.length<maxProducts;attempt++){
    try {
-    const path=platform==='shopify'?`/products.json?limit=100&page=${page}`:`/wp-json/wc/store/v1/products?per_page=100&page=${page}`;
-    const data=JSON.parse(await fetchPublic(origin+path));const rows=platform==='shopify'?data.products:data;
+    const path=platform==='shopify'?`/products.json?limit=${pageSize}&page=${page}`:`/wp-json/wc/store/v1/products?per_page=${pageSize}&page=${page}&_fields=id,name,permalink,images,prices,is_in_stock,categories,tags`;
+    const data=JSON.parse(await fetchSource(origin+path));const rows=platform==='shopify'?data.products:data;
     if(!Array.isArray(rows))throw Error('Feed shape not supported');
     products.push(...rows.map(r=>product(r,platform,origin)));report(`נקראו ${products.length} מוצרים`);
-    if(rows.length<100)break;
-    if(page===5)warnings.push('הייבוא מוגבל למדגם של 500 מוצרים; נדרש סנכרון מלא לפני הפעלה.');
-   }catch(error){warnings.push(error.message);break;}
+    if(rows.length<pageSize){complete=true;break;}
+    page++;
+   }catch(error){
+    if(error.message==='Source exceeds 3 MB'&&pageSize>5){
+     pageSize=pageSize===25?10:5;
+     // Changing page size changes offsets. Restart to avoid silently skipping
+     // products after a large page, keeping the same bounded sample size.
+     products=[];page=1;report(`התגובה גדולה; עוברים למנות של ${pageSize} מוצרים`);continue;
+    }
+    warnings.push(`קריאת הקטלוג נעצרה: ${error.message}`);break;
+   }
   }
+  if(products.length>=maxProducts)warnings.push(`הייבוא הגיע למגבלת ${maxProducts} מוצרים; אין הבטחה לכיסוי מלא.`);
  }
  if(!products.length) {
   for(const match of html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)){
@@ -51,6 +63,6 @@ export async function discover(url,platform,report=()=>{}) {
   }
   warnings.push('נאסף רק מידע מובנה מהעמוד. נדרש פיד או מחבר מורשה לסנכרון מלא.');
  }
- products=[...new Map(products.slice(0,500).map(p=>[p.id,p])).values()];
- return {title,products,warnings,sourceUrl:url,platform,capturedAt:new Date().toISOString(),sample:true};
+ products=[...new Map(products.slice(0,maxProducts).map(p=>[p.id,p])).values()];
+ return {title,products,warnings,sourceUrl:url,platform,capturedAt:new Date().toISOString(),sample:!complete,complete};
 }

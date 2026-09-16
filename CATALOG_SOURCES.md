@@ -7,7 +7,7 @@
 
 1. קורא את כתובת האתר כדי לוודא שהדומיין זמין.
 2. מנסה את ה־Store API הציבורי:
-   `/wp-json/wc/store/v1/products?per_page=100&page=N`
+   `/wp-json/wc/store/v1/products?per_page=25&page=N&_fields=id,name,permalink,images,prices,is_in_stock,categories,tags`
 3. מעביר רק שדות מוצר ציבוריים: מזהה, שם, URL, תמונה, מחיר, מלאי,
    קטגוריות ותגיות.
 4. עוצר במדגם של 500 מוצרים בגרסת ה־Studio. סנכרון מלא ידרוש מחבר מורשה,
@@ -17,7 +17,7 @@
 
 ה־Studio מנסה את:
 
-`/products.json?limit=100&page=N`
+`/products.json?limit=25&page=N`
 
 הוא ממפה את `product_type`, `tags`, הווריאציות, המחיר והמלאי לסכמת המוצר
 המשותפת. Shopify שמגביל את ה־endpoint או מסתיר מוצרים דורש Storefront API או
@@ -48,6 +48,8 @@ timeout וגודל תגובה. תוכן האתר הוא data בלבד; הוא א
 ## מה קורה אחרי המדגם
 
 המדגם משמש ליצירת `profile`, `product.schema`, כללי badges ותכנון אינדקס.
+אם תגובה חורגת מ־3MB, הקריאה מתחילה מחדש במנות של 10 ואז 5 מוצרים.
+כך נשמרת מגבלת הזיכרון בלי לדלג על מוצרים עקב שינוי גודל העמוד.
 לפני הפעלה מחליפים את ה־sample connector ב־sync adapter:
 
 ```text

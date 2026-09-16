@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const normalize = value => String(value ?? '').normalize('NFKC').toLowerCase()
+  .normalize('NFD').replace(/\p{M}/gu,'').replace(/[®™]/g,'')
   .replace(/[׳״'’`]/g, '').replace(/[-–—()[\],:;!?]/g, ' ').replace(/\s+/g, ' ').trim();
 const list = value => Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
 export function productUrl(value) {
@@ -40,7 +41,7 @@ export function processProduct(raw, client, observations = [], observedAt = null
   if (raw.specialLabel === true) issues.push('legacy-label-without-meaning');
   return {
     id: String(raw.id), tenantId: client.tenantId, schemaVersion: client.version,
-    title: raw.name || raw.title || '', sku: String(raw.raw?.sku || ''), url: raw.url,
+    title: raw.name || raw.title || '', description:raw.description||'', specifications:raw.specifications||{}, sku: String(raw.raw?.sku || ''), url: raw.url,
     image: raw.image, price: Number.isFinite(raw.price) ? raw.price : null,
     regularPrice: Number.isFinite(raw.regularPrice) ? raw.regularPrice : null,
     currency: raw.currency || null, stockStatus: raw.stockStatus || 'unknown',
@@ -53,7 +54,7 @@ export function processProduct(raw, client, observations = [], observedAt = null
 
 export function planQuery(query, client) {
   let remaining = ` ${normalize(query)} `;
-  const plan = {strategy: 'lexical', productType: null, colors: [], finishes: [], maxPrice: null, terms: []};
+  const plan = {strategy: 'lexical', productType: null, colors: [], finishes: [], tags: [], maxPrice: null, terms: []};
   const price = remaining.match(/עד\s+(\d+(?:\.\d+)?)\s*(?:שקל(?:ים)?|שח|₪)?/);
   if (price) { plan.maxPrice = Number(price[1]); remaining = remaining.replace(price[0], ' '); }
   const aliases = Object.entries(client.productTypes).flatMap(([type, rule]) => rule.queryAliases.map(alias => [type, normalize(alias)]))
@@ -72,8 +73,28 @@ export function planQuery(query, client) {
       }
     }
   }
+  // Tenant-defined tags (e.g. an attribute an operator asked to find/mark,
+  // like "square screen") are matched by their own label plus any declared
+  // alias phrasing, independent of whether that wording ever appears in a
+  // product title — the tag was assigned to matching products separately.
+  for (const [tag, rule] of Object.entries(client.tagDefinitions || {})) {
+    const aliases = [normalize(tag), ...(rule.queryAliases || []).map(normalize)];
+    for (const alias of aliases) {
+      if (alias && remaining.includes(` ${alias} `)) {
+        if (!plan.tags.includes(tag)) plan.tags.push(tag);
+        remaining = remaining.replace(` ${alias} `, ' ');
+      }
+    }
+  }
   plan.terms = remaining.trim().split(/\s+/).filter(Boolean);
-  if (plan.productType || plan.colors.length || plan.finishes.length || plan.maxPrice !== null) plan.strategy = 'filtered-lexical';
+  // Tenant-specific vocabulary rules are produced by the operator agent.
+  // They expand a phrase without replacing the shopper's original terms.
+  for (const [phrase, terms] of Object.entries(client.semanticAliases || {})) {
+    if (normalize(query).includes(normalize(phrase))) {
+      for (const term of terms) if (!plan.terms.includes(normalize(term))) plan.terms.push(normalize(term));
+    }
+  }
+  if (plan.productType || plan.colors.length || plan.finishes.length || plan.tags.length || plan.maxPrice !== null) plan.strategy = 'filtered-lexical';
   return plan;
 }
 
@@ -95,6 +116,7 @@ export function search(products, client, {query, cursor, limit = 12} = {}) {
   let matches = exact.length ? exact : visible.filter(p =>
     (!plan.productType || p.productType === plan.productType) && plan.colors.every(c => p.colors.includes(c)) &&
     plan.finishes.every(f => (p.finishes || []).includes(f)) &&
+    plan.tags.every(t => (p.tags || []).includes(t)) &&
     (plan.maxPrice === null || (p.price !== null && p.price <= plan.maxPrice)) &&
     plan.terms.every(t => normalize(p.title).split(' ').includes(t)));
   matches.sort((a,b) => Number(normalize(b.title) === normalize(query))-Number(normalize(a.title) === normalize(query)) || a.id.localeCompare(b.id));

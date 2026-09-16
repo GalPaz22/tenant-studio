@@ -1,4 +1,5 @@
 import {indexDefinition} from './runtime.mjs';
+import {readFileSync} from 'node:fs';
 // The browser key below is the existing storefront search key, never an admin token.
 export function buildArtifacts(project) {
  const revision=project.revisions.at(-1);if(!revision)throw Error('No revision');
@@ -21,6 +22,10 @@ export function mountSearch(root,{endpoint,apiKey}) {
   'widget.mjs':widget,
   'INSTALL.md':`# ${revision.profile.name}\nDraft revision ${revision.number}.\n\nInstall search.mjs and profile.json under tenants/<tenant>/ in dashboard-server. Register this factory behind authenticated tenant routing before connecting widget.mjs. No live tenant binding has been created.\n\nImport mountSearch from widget.mjs and supply the deployed /search URL and existing storefront API key. Never supply an admin or Studio token. This initial widget renders first-page search and badges; autocomplete/load-more and platform sync installation still need integration.\n\nPlatform: ${project.platform}. Catalog: bounded public sample, not a full synced inventory. Mongo/Atlas provisioning in Studio is staging only.\n`
  };
+ if(new URL(project.url).hostname.replace(/^www\./,'')==='garmin.co.il'){
+  files['processor.mjs']=readFileSync(new URL('./tenants/garmin/index.mjs',import.meta.url),'utf8');
+  files['research.json']=JSON.stringify(project.research||{},null,2);
+ }
  if(project.platform==='woocommerce')files['semantix-draft.php']=`<?php
 /* Plugin Name: Semantix Tenant Search (Draft)
 Description: Search mount shortcode; configure a deployed endpoint and storefront key in wp-config.php.

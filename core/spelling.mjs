@@ -46,7 +46,7 @@ export function createSpellingResolver(products,client){
     const variants=candidates.filter(c=>distance(c.compact,best.compact)<=1);
     const ids=new Set(variants.flatMap(c=>[...c.ids]));
     const matches=visible.filter(p=>ids.has(p.id)&&(!plan.productType||p.productType===plan.productType)&&
-      plan.colors.every(c=>p.colors.includes(c))&&plan.finishes.every(f=>p.finishes.includes(f))&&
+      plan.colors.every(c=>p.colors.includes(c))&&plan.finishes.every(f=>p.finishes.includes(f))&&plan.tags.every(t=>(p.tags||[]).includes(t))&&
       (plan.maxPrice===null||(p.price!==null&&p.price<=plan.maxPrice)));
     matches.sort((a,b)=>a.id.localeCompare(b.id));
     return matches.length?{status:'matched',matches,plan:{...plan,strategy:'catalog-spelling'},
