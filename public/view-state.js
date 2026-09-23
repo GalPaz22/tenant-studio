@@ -8,8 +8,8 @@ export function createViewState(storage) {
     select(id) { write('selected', valid(id) ? id : null); },
     draft(id) {
       const value = read('draft:' + id);
-      return {message: typeof value?.message === 'string' ? value.message : '', query: typeof value?.query === 'string' ? value.query : ''};
+      return {message: typeof value?.message === 'string' ? value.message : '', query: typeof value?.query === 'string' ? value.query : '',...(typeof value?.catalogQuery==='string'?{catalogQuery:value.catalogQuery}:{})};
     },
-    saveDraft(id, value) { if (valid(id)) write('draft:' + id, {message: value.message.slice(0, 10000), query: value.query.slice(0, 2000)}); }
+    saveDraft(id, value) { if (valid(id)) write('draft:' + id, {message: value.message.slice(0, 10000), query: value.query.slice(0, 2000),...(typeof value.catalogQuery==='string'?{catalogQuery:value.catalogQuery.slice(0,2000)}:{})}); }
   };
 }

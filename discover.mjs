@@ -5,19 +5,20 @@ export function publicAddress(address) {
  const [a,b]=address.split('.').map(Number);
  return !(a===0||a===10||a===127||a>=224||a===169&&b===254||a===172&&b>=16&&b<=31||a===192&&b===168||a===100&&b>=64&&b<=127||a===198&&(b===18||b===19));
 }
-export async function fetchPublic(input, redirects=0) {
+export async function fetchPublic(input, redirects=0,options={}) {
+ const maxBytes=options.maxBytes??3*1024*1024;if(!Number.isInteger(maxBytes)||maxBytes<1||maxBytes>256*1024*1024)throw Error('Invalid source size limit');
  const url=new URL(input);
  if(url.protocol!=='https:'||url.username||url.password||url.port&&url.port!=='443')throw Error('נדרשת כתובת HTTPS ציבורית');
  const answers=await lookup(url.hostname,{all:true,family:4});
  if(!answers.length||answers.some(x=>!publicAddress(x.address)))throw Error('כתובת רשת פנימית אינה מותרת');
  const {status,headers,body}=await new Promise((resolve,reject)=>{
-  const req=https.get(url,{headers:{'User-Agent':'Semantix-Tenant-Studio/1.0'},lookup:(_h,options,cb)=>options.all?cb(null,[{address:answers[0].address,family:4}]):cb(null,answers[0].address,4)},res=>{
+  const req=https.request(url,{method:options.method||'GET',headers:{'User-Agent':'Semantix-Tenant-Studio/1.0',...(options.headers||{})},lookup:(_h,options,cb)=>options.all?cb(null,[{address:answers[0].address,family:4}]):cb(null,answers[0].address,4)},res=>{
    let size=0;const chunks=[];
-   res.on('data',c=>{size+=c.length;if(size>3*1024*1024)req.destroy(Error('Source exceeds 3 MB'));else chunks.push(c)});
+   res.on('data',c=>{size+=c.length;if(size>maxBytes)req.destroy(Error(maxBytes===3*1024*1024?'Source exceeds 3 MB':'Source exceeds configured feed limit'));else chunks.push(c)});
    res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:Buffer.concat(chunks).toString()}));res.on('error',reject);
-  });req.setTimeout(15000,()=>req.destroy(Error('Source timeout')));req.on('error',reject);
+  });req.setTimeout(15000,()=>req.destroy(Error('Source timeout')));req.on('error',reject);req.end(options.body);
  });
- if(status>=300&&status<400&&headers.location){if(redirects>=3)throw Error('Too many redirects');return fetchPublic(new URL(headers.location,url).href,redirects+1)}
+ if(status>=300&&status<400&&headers.location){if(redirects>=3)throw Error('Too many redirects');const next=new URL(headers.location,url);if(Object.keys(options.headers||{}).length&&next.origin!==url.origin)throw Error('Authorized source redirected outside its origin');if(options.method==='POST')throw Error('POST source redirect is not supported');return fetchPublic(next.href,redirects+1,options)}
  if(status!==200)throw Error('Source HTTP '+status);
  return body;
 }

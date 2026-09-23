@@ -1,0 +1,17 @@
+# Render Blueprint: the site-crawl worker for Tenant Studio (Background Worker — long-running, no HTTP port).
+# It serves every tenant whose crawl the studio set to "running"; progress lives in MongoDB (STUDIO_CRAWL_DB),
+# so a deploy or restart resumes from the last checkpoint. Background Workers need a paid instance type.
+services:
+  - type: worker
+    name: semantix-site-crawler
+    runtime: node
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: node crawl-worker.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: MONGODB_URI
+        sync: false
+      - key: STUDIO_CRAWL_DB
+        value: semantix_studio

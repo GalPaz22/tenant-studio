@@ -1,0 +1,16 @@
+const $=id=>document.getElementById(id),el=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n};
+export function createFastTrackView({api,getProject,update,error,openProposal}){
+ const busy=new Set();
+ async function act(action){const p=getProject();if(!p||busy.has(p.id))return;busy.add(p.id);render(p);$('fast-status').textContent=action==='analyze'?'קורא נתוני חיפוש שמורים ומנתח את הקונטקסט…':'בונה אינדקס מהכרטיסים השמורים…';try{const next=await api('/projects/'+p.id+'/fast-track',{action});if(getProject()?.id===p.id){update(next);$('fast-status').textContent='הושלם ונשמר בעותק העבודה.';}}catch(e){if(getProject()?.id===p.id){$('fast-status').textContent=e.message;error(e);}}finally{busy.delete(p.id);if(getProject()?.id===p.id)render(getProject());}}
+ $('fast-analyze').onclick=()=>act('analyze');$('fast-reindex').onclick=()=>act('reindex');
+ function render(p){$('fast-track').hidden=!p.existingClient;for(const id of ['fast-analyze','fast-reindex'])$(id).disabled=busy.has(p.id);const root=$('fast-report');root.replaceChildren();const s=p.fastTrack;if(!s)return;
+ if(s.reindexedAt)root.append(el('p',`האינדקס עודכן: ${new Date(s.reindexedAt).toLocaleString('he-IL')} · ${s.indexedProducts} מוצרים`));
+ const a=s.analysis;if(!a)return;
+ const all=el('button','טפל בכל הבעיות באייג׳נט');all.className='primary';all.disabled=busy.has(p.id)||!(a.proposals.length||a.missingData.length);all.onclick=()=>openProposal({title:'כל ההצעות והחוסרים בדוח',allIssues:true});root.append(all,el('p','פותח בקשת טיפול מרוכזת בצ׳אט. ניתן לערוך ולשלוח; בעיות שלא ניתן לפתור בכלים הקיימים יפורטו בסיום.'));
+ root.append(el('h3','מסקנות המודל'),el('p',a.summary),el('p',a.coverage.note+' · '+a.coverage.products+' מוצרים · '+a.coverage.sample+' דוגמאות'));
+ const signals=a.analytics;root.append(el('p',signals.scope),el('p','תקופה: '+(signals.from||'לא ידועה')+' — '+(signals.to||'לא ידועה')));
+ for(const [key,title,metric] of [['top','שאילתות מובילות','searches'],['converting','שאילתות עם הוספה לסל — לא רכישות','carts'],['failed','שאילתות עם אפס תוצאות מתועדות','zeroResults'],['clicked','שאילתות עם הקלקות','clicks']]){const section=el('details','');section.open=false;section.append(el('summary',title));for(const q of signals[key])section.append(el('p',q.query+' · '+q[metric]));if(!signals[key].length)section.append(el('p',key==='failed'&&!signals.measuredSearches?'אין תיעוד של מספר תוצאות; אי אפשר להסיק אילו חיפושים נכשלו.':'לא נמצאו אירועים מתועדים במדגם.'));root.append(section);}
+ root.append(el('h3','הצעות לעיבוד ממוקד'));for(const x of a.proposals){const card=el('article','');card.className='learning-card';card.append(el('h3',x.title),el('p',x.reason),el('p','שדה מוצע: '+x.field),el('p','איך לעבד: '+x.processing),el('p','על אילו מוצרים: '+x.scope),el('p','חיפושים רלוונטיים: '+x.queries.join(' · ')));const actions=el('div','');actions.className='build-actions';const fix=el('button','טפל בהצעה עם האייג׳נט');fix.className='primary';fix.onclick=()=>openProposal(x);const discuss=el('button','שאל על ההצעה');discuss.onclick=()=>openProposal(x,true);actions.append(fix,discuss);card.append(actions);root.append(card);}for(const text of a.missingData)root.append(el('p','מידע חסר: '+text));
+ }
+ return {render};
+}

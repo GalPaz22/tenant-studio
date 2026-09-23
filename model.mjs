@@ -1,12 +1,29 @@
 import { GoogleGenAI } from '@google/genai';
-export async function askAgent(prompt) {
+export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.1-flash-lite';
+export const askChatAgent=prompt=>askAgent(prompt,{model:chatModel(),reasoning:false});
+export const studioModel=()=>process.env.STUDIO_AGENT_MODEL||chatModel();
+export const askStudioAgent=prompt=>askAgent(prompt,{model:studioModel(),reasoning:false});
+// The reviewer that accepts or rejects a search fix thinks before answering; a cheap judge approves false claims.
+export const judgeModel=()=>process.env.STUDIO_JUDGE_MODEL||studioModel();
+export const askJudgeAgent=prompt=>askAgent(prompt,{model:judgeModel(),reasoning:true});
+export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false}={}) {
  const key=process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
  if(!key)throw Error('נדרש GEMINI_API_KEY או GOOGLE_API_KEY להפעלת האייג׳נט');
  const response=await new GoogleGenAI({apiKey:key}).models.generateContent({
-  model:process.env.STUDIO_MODEL || 'gemini-2.5-flash',contents:prompt,
-  config:{temperature:0,responseMimeType:'application/json',maxOutputTokens:6000,thinkingConfig:{thinkingBudget:0},httpOptions:{timeout:45000,retryOptions:{attempts:1}}}
+  model,contents:prompt,
+  config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens:reasoning?24000:12000,
+   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:reasoning?'high':(/flash/.test(model)?'minimal':'low')}:{thinkingBudget:reasoning?8192:0},httpOptions:{timeout:reasoning?120000:45000,retryOptions:{attempts:1}}}
  });
- return JSON.parse(response.text);
+ const raw=response.text||'';
+ if(response.candidates?.[0]?.finishReason==='MAX_TOKENS'){const e=Error('פלט המודל נחתך; נדרש פרופיל קצר יותר');e.modelResponse=raw;throw e;}
+ let data;try{data=parseAgentResponse(raw);if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Expected JSON object');}catch{const e=Error('המודל החזיר JSON לא תקין');e.modelResponse=raw;throw e;}
+ Object.defineProperty(data,'rawResponse',{value:raw,enumerable:false});Object.defineProperty(data,'usage',{value:response.usageMetadata,enumerable:false});return data;
+}
+export function parseAgentResponse(raw){
+ let data=JSON.parse(raw);
+ if(Array.isArray(data)&&data.length===1&&data[0]&&typeof data[0]==='object'&&!Array.isArray(data[0]))data=data[0];
+ if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Expected one JSON object');
+ return data;
 }
 export function validateProfile(profile) {
  if(!profile || typeof profile!=='object' || Array.isArray(profile))throw Error('Invalid profile');
@@ -42,6 +59,10 @@ export function validateProfile(profile) {
  const p=profile.pipeline;
  if(!p||!Number.isInteger(p.maxCandidates)||p.maxCandidates<10||p.maxCandidates>100||typeof p.lightweightRouter!=='boolean')throw Error('Invalid pipeline');
  if(profile.indexFields!==undefined && (!strings(profile.indexFields)||profile.indexFields.some(f=>!['name','id','categories','tags','colors','finishes','productType','price','stockStatus','hidden'].includes(f))))throw Error('Invalid index fields');
+ if(profile.scopedAliases!==undefined){
+  if(!Array.isArray(profile.scopedAliases)||profile.scopedAliases.length>100)throw Error('Too many scoped aliases');
+  const ids=new Set();for(const r of profile.scopedAliases){if(!r||typeof r.id!=='string'||r.id.length>100||ids.has(r.id)||typeof r.term!=='string'||!r.term.trim()||r.term.length>150||!Array.isArray(r.productIds)||!r.productIds.length||r.productIds.length>200||!r.productIds.every(id=>typeof id==='string'&&id.length>0&&id.length<=200)||![undefined,'add','only'].includes(r.mode))throw Error('Invalid scoped alias');ids.add(r.id);}
+ }
  return profile;
 }
 export const contract=`Return JSON {message: Hebrew explanation, profile: {name:string, domain:string, productTypes:{key:{categories:string[],queryAliases:string[]}}, colors:{color:string[]}, finishes:{key:{categories:string[],queryAliases:string[]}}, queryAliases:{typo:correction}, semanticAliases:{phrase:string[]}, tagDefinitions:{tag:{definition:string,queryAliases:string[]}}, badgeCandidates:{categories:string[],tags:string[]}, badgeRules:[{field:"categories"|"tags",value:string,text:string,order:integer}], indexFields:string[] selected from name,id,categories,tags,colors,finishes,productType,price,stockStatus,hidden, pipeline:{maxCandidates:integer 10..100,lightweightRouter:boolean}}}. semanticAliases are explicit tenant vocabulary rules: map a shopper phrase to short catalog terms/synonyms that must be added to retrieval. When an operator asks to make a query behave differently, add or update this field and mention the exact rule in message. Use observed exact category names. Badge candidates are unverified; only add badgeRules when the operator explicitly confirms that mapping. No invented badges or color metadata. Product-type query aliases must not be overly broad.

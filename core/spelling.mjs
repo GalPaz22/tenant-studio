@@ -1,4 +1,4 @@
-import {normalize,planQuery,search} from './core.mjs';
+import {normalize,planQuery,search,applySpelling} from './core.mjs';
 
 const tokens=text=>normalize(text).match(/[\p{L}\p{N}]+/gu)||[];
 export function distance(a,b){
@@ -22,7 +22,7 @@ export function createSpellingResolver(products,client){
     }
   }
   return query=>{
-    const corrected=normalize(query).split(' ').map(word=>client.queryAliases?.[word] || word).join(' ');
+    const corrected=applySpelling(query,client.queryAliases);
     if(corrected!==normalize(query)){
       let page=search(products,client,{query:corrected,limit:50});
       const matches=[...page.matches];

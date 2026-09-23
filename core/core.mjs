@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const normalize = value => String(value ?? '').normalize('NFKC').toLowerCase()
   .normalize('NFD').replace(/\p{M}/gu,'').replace(/[®™]/g,'')
-  .replace(/[׳״'’`]/g, '').replace(/[-–—()[\],:;!?]/g, ' ').replace(/\s+/g, ' ').trim();
+  .replace(/[׳״'’`"“”„«»″‟]/g, '').replace(/[-–—()[\],:;!?]/g, ' ').replace(/\s+/g, ' ').trim();
 const list = value => Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
 export function productUrl(value) {
   try {
@@ -52,11 +52,40 @@ export function processProduct(raw, client, observations = [], observedAt = null
   };
 }
 
+// Tenant typo corrections; keys may be phrases ("מאיר שליו"), longest first, whole words only.
+export function applySpelling(query, aliases = {}) {
+  let text = ` ${normalize(query)} `;
+  for (const [from, to] of Object.entries(aliases || {}).map(([f, t]) => [normalize(f), normalize(t)]).filter(([f]) => f).sort((a, b) => b[0].length - a[0].length))
+    while (text.includes(` ${from} `)) text = text.replace(` ${from} `, ` ${to} `);
+  return text.trim();
+}
 export function planQuery(query, client) {
-  let remaining = ` ${normalize(query)} `;
+  const spelled = applySpelling(query, client.queryAliases);
+  let remaining = ` ${spelled} `;
   const plan = {strategy: 'lexical', productType: null, colors: [], finishes: [], tags: [], maxPrice: null, terms: []};
+  if (spelled !== normalize(query)) plan.spelling = {from: normalize(query), to: spelled, source: 'tenant-alias'};
+  for(const rule of [...(client.scopedAliases||[])].sort((a,b)=>b.term.length-a.term.length)){
+    const term=normalize(rule.term);if(term&&remaining.includes(` ${term} `)){
+      (plan.scopedAliases??=[]).push(rule);
+      plan.scopedProductIds=plan.scopedProductIds?plan.scopedProductIds.filter(id=>rule.productIds.includes(id)):[...rule.productIds];
+      remaining=remaining.replace(` ${term} `,' ');
+    }
+  }
   const price = remaining.match(/עד\s+(\d+(?:\.\d+)?)\s*(?:שקל(?:ים)?|שח|₪)?/);
   if (price) { plan.maxPrice = Number(price[1]); remaining = remaining.replace(price[0], ' '); }
+  // Tenant-defined tags (e.g. an attribute an operator asked to find/mark,
+  // like "square screen") are matched by their own label plus any declared
+  // alias phrasing, independent of whether that wording ever appears in a
+  // product title — the tag was assigned to matching products separately.
+  for (const [tag, rule] of Object.entries(client.tagDefinitions || {})) {
+    const aliases = [normalize(tag), ...(rule.queryAliases || []).map(normalize)];
+    for (const alias of aliases) {
+      if (alias && remaining.includes(` ${alias} `)) {
+        if (!plan.tags.includes(tag)) plan.tags.push(tag);
+        remaining = remaining.replace(` ${alias} `, ' ');
+      }
+    }
+  }
   const aliases = Object.entries(client.productTypes).flatMap(([type, rule]) => rule.queryAliases.map(alias => [type, normalize(alias)]))
     .sort((a,b) => b[1].length-a[1].length);
   for (const [type, alias] of aliases) {
@@ -73,19 +102,6 @@ export function planQuery(query, client) {
       }
     }
   }
-  // Tenant-defined tags (e.g. an attribute an operator asked to find/mark,
-  // like "square screen") are matched by their own label plus any declared
-  // alias phrasing, independent of whether that wording ever appears in a
-  // product title — the tag was assigned to matching products separately.
-  for (const [tag, rule] of Object.entries(client.tagDefinitions || {})) {
-    const aliases = [normalize(tag), ...(rule.queryAliases || []).map(normalize)];
-    for (const alias of aliases) {
-      if (alias && remaining.includes(` ${alias} `)) {
-        if (!plan.tags.includes(tag)) plan.tags.push(tag);
-        remaining = remaining.replace(` ${alias} `, ' ');
-      }
-    }
-  }
   plan.terms = remaining.trim().split(/\s+/).filter(Boolean);
   // Tenant-specific vocabulary rules are produced by the operator agent.
   // They expand a phrase without replacing the shopper's original terms.
@@ -96,6 +112,11 @@ export function planQuery(query, client) {
   }
   if (plan.productType || plan.colors.length || plan.finishes.length || plan.tags.length || plan.maxPrice !== null) plan.strategy = 'filtered-lexical';
   return plan;
+}
+
+// mode "only" narrows the phrase to exactly the linked products (e.g. "יומן" → planners, not novels titled "יומן").
+export function matchesScopedAliases(p,plan){
+ return (plan.scopedAliases||[]).every(rule=>rule.productIds.includes(p.id)||rule.mode!=='only'&&` ${normalize([p.title,p.name,p.description,p.summary,...(p.categories||[]),...(p.tags||[]),...Object.values(p.specifications||{})].join(' '))} `.includes(` ${normalize(rule.term)} `));
 }
 
 export function search(products, client, {query, cursor, limit = 12} = {}) {
@@ -114,7 +135,7 @@ export function search(products, client, {query, cursor, limit = 12} = {}) {
   const visible = products.filter(p => p.tenantId === client.tenantId && !p.hidden && p.stockStatus === 'instock');
   const exact = visible.filter(p => normalize(p.id) === normalize(query) || (p.sku && normalize(p.sku) === normalize(query)));
   let matches = exact.length ? exact : visible.filter(p =>
-    (!plan.productType || p.productType === plan.productType) && plan.colors.every(c => p.colors.includes(c)) &&
+    matchesScopedAliases(p,plan) && (!plan.productType || p.productType === plan.productType) && plan.colors.every(c => p.colors.includes(c)) &&
     plan.finishes.every(f => (p.finishes || []).includes(f)) &&
     plan.tags.every(t => (p.tags || []).includes(t)) &&
     (plan.maxPrice === null || (p.price !== null && p.price <= plan.maxPrice)) &&

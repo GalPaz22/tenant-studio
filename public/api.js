@@ -23,5 +23,17 @@ export function createApi(fetcher=fetch) {
    }
   }
  }
- return {request};
+ // POST that answers with NDJSON events; onEvent is called per line as it arrives.
+ async function stream(path,body,onEvent,signal){
+  if(!token)await session();
+  let response=await fetcher('/api'+path,{method:'POST',signal,headers:{'Content-Type':'application/json','X-Studio-Token':token},body:JSON.stringify(body)});
+  if(response.status===403){await session();response=await fetcher('/api'+path,{method:'POST',signal,headers:{'Content-Type':'application/json','X-Studio-Token':token},body:JSON.stringify(body)});}
+  if(!response.ok||!response.body)return read(response);
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  for(;;){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+   let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i).trim();buffer=buffer.slice(i+1);if(line)onEvent(JSON.parse(line));}
+   if(done)break;}
+  if(buffer.trim())onEvent(JSON.parse(buffer));
+ }
+ return {request,stream};
 }
