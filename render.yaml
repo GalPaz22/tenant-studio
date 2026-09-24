@@ -11,6 +11,10 @@ services:
         value: "22"
       - key: ALLOW_REMOTE
         value: "true"
+      - key: MONGODB_URI
+        sync: false
+      - key: STUDIO_DASHBOARD_MONGODB_URI
+        sync: false
 
   - type: worker
     name: semantix-site-crawler
