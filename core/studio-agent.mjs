@@ -6,6 +6,7 @@ import {normalize} from './core.mjs';
 import {hash} from './catalog.mjs';
 import {validateProfile} from '../model.mjs';
 import {evaluateExamples,learningState} from './learning.mjs';
+import {evaluateBaseline,baselineRegressions} from './baseline.mjs';
 import {randomUUID} from 'node:crypto';
 import {createDraftRuntime} from '../runtime.mjs';
 import {applyConciergeSettings,settingsOf,inspectTrigger} from './concierge.mjs';
@@ -94,7 +95,7 @@ export const tools={
   run:async ctx=>{if(!ctx.services.crawls)throw Error('הסורק דורש חיבור MongoDB');const {recentErrors,...v}=crawlStatus(await ctx.services.crawls.meta(ctx.p.id),crawlSettings(ctx.p),ctx.p.siteCrawl||null);return v;},
   say:(a,r)=>r.status==='none'?'הסורק עוד לא הופעל':`סורק: ${r.done}/${r.total} דפים, ${r.unmerged} לא מוזגו`},
  merge_crawl:{doc:'{} merge pages crawled so far into the working catalog: fills missing author/publisher, refreshes price and stock, adds products missing from the client database. Use when shopper_clicks shows products missing from the catalog and crawl_status has unmerged pages',mutates:'data',
-  run:async ctx=>{const s=await ctx.services.crawls?.read(ctx.p.id);if(!s||!Object.keys(s.products).length)throw Error('אין עדיין דפים שנסרקו');const counts=mergeCrawl(ctx.p,s);ctx.dataDirty=true;return {...counts,pages:Object.keys(s.products).length};},
+  run:async ctx=>{const s=await ctx.services.crawls?.read(ctx.p.id);if(!s||!Object.keys(s.products).length)throw Error('אין עדיין דפים שנסרקו');const counts=mergeCrawl(ctx.p,s,ctx.p.scraper?.status==='active'?ctx.p.scraper.spec:null);ctx.dataDirty=true;return {...counts,pages:Object.keys(s.products).length};},
   say:(a,r)=>`מיזוג הסריקה — ${r.added} מוצרים נוספו, ${r.updated} עודכנו`,change:(a,r)=>`מוזגה סריקת האתר (${r.added} נוספו, ${r.updated} עודכנו)`},
  search_analytics:{doc:'{} real shopper queries from the database: top, zero-result, clicked and add-to-cart queries',
   run:async ctx=>{const r=await ctx.services.signals(ctx.p);ctx.p.fastTrack={...ctx.p.fastTrack,signals:r};return r;},
@@ -390,7 +391,7 @@ export async function studioAgent(project,message,{model,judge=model,onEvent=asy
  const ctx={p,profile:structuredClone(p.revisions.at(-1).profile),model,services:{signals:readSearchSignals,refreshSourceFields,inspectPage:inspectStorePage,database:{fields:dbFields,search:dbSearch,importField:importDbField,clicks:dbShopperClicks},get crawls(){return defaultCrawls();},createSearch:createStudioSearch,...services},dataDirty:false,runtime:null};
  const initialProfile=hash(ctx.profile),baseline=evaluateExamples(project,project.revisions.at(-1).profile);
  ctx.search=async(query,limit)=>{ensureIndex(ctx);const key=hash(ctx.profile);if(ctx.runtime?.key!==key)ctx.runtime={key,run:ctx.services.createSearch(ctx.p,ctx.profile)};return ctx.runtime.run(query,limit);};
- const base=prompt(ctx,message,context),history=[],steps=[],changes=[];let saveWarned=false,answerWarned=false,verifyRounds=0,verification=null,verifiedAt=null,idleWarned=0;
+ const base=prompt(ctx,message,context),history=[],steps=[],changes=[];let saveWarned=false,baselineWarned=false,baselineBefore=null,answerWarned=false,verifyRounds=0,verification=null,verifiedAt=null,idleWarned=0;
  for(let call=0;call<MAX_MODEL_CALLS;call++){
   // One malformed or timed-out model reply falls through to the protocol retry below instead of ending the turn.
   let r;try{r=await model(base+'\nTOOL RESULTS '+JSON.stringify(history));}catch(e){r=null;await onEvent({type:'note',text:'תשובת המודל לא התקבלה תקינה — מנסה שוב'});}
@@ -423,7 +424,15 @@ export async function studioAgent(project,message,{model,judge=model,onEvent=asy
   if(profileChanged)validateProfile(ctx.profile);
   if(changed){ensureIndex(ctx);const after=evaluateExamples(ctx.p,ctx.profile),broken=after.filter((x,i)=>baseline[i]?.passed&&!x.passed&&baseline[i].id===x.id);
    if(broken.length){if(!saveWarned){saveWarned=true;history.push({tool:'save',result:{error:'השמירה נחסמה: השינויים שוברים בדיקות קבועות',broken:broken.map(b=>({query:b.query,missing:b.missing,unwanted:b.unwanted}))}});await onEvent({type:'note',text:'השינויים שוברים בדיקות קבועות — האייג׳נט מתקן'});continue;}
-    throw Error('השינויים לא נשמרו כי הם שוברים בדיקות קבועות: '+broken.map(b=>b.query).join(' · '));}}
+    throw Error('השינויים לא נשמרו כי הם שוברים בדיקות קבועות: '+broken.map(b=>b.query).join(' · '));}
+   // What the production search does well (shoppers clicked it) and we already keep must stay kept.
+   const watch=new Set((p.baselineEval?.results||[]).filter(r=>r.status==='kept'||r.status==='partial').map(r=>r.query));
+   if(p.baseline&&watch.size){
+    baselineBefore??=p.baselineEval.profileHash===initialProfile&&p.baselineEval.indexVersion===project.searchIndex?.version?p.baselineEval:evaluateBaseline(project,project.revisions.at(-1).profile,p.baseline,{only:watch});
+    const lost=baselineRegressions(baselineBefore,evaluateBaseline(ctx.p,ctx.profile,p.baseline,{only:watch,index:ctx.p.searchIndex}));
+    if(lost.length){if(!baselineWarned){baselineWarned=true;history.push({tool:'save',result:{error:'Save blocked: the change drops products that shoppers choose in the current production search',lost:lost.slice(0,10)}});await onEvent({type:'note',text:`השינוי פוגע ב־${lost.length} חיפושים שעובדים היום — האייג׳נט מתקן`});continue;}
+     throw Error('השינויים לא נשמרו כי הם פוגעים בחיפושים שעובדים היום: '+lost.slice(0,5).map(b=>`״${b.query}״`).join(' · '));}
+   }}
   // Closed loop: a fix is done only when a fresh search shows the operator what they asked for.
   const queries=verifyQueries?.length?verifyQueries.slice(0,MAX_VERIFY_QUERIES):verificationQueries(p,message,r,steps);
   // After a failed verification, answering again without changing anything cannot pass; send the agent back to work.

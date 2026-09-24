@@ -5,9 +5,10 @@ import {buildSearchIndex} from './search-index.mjs';
 import {learningState} from './learning.mjs';
 import {normalize} from './core.mjs';
 import {dbShopperClicks} from '../existing-client.mjs';
+import {evaluateBaseline} from './baseline.mjs';
 import {hash} from './catalog.mjs';
 
-const REASONS={zero:'החזיר 0 תוצאות לקונים',noClicks:'אף קונה לא לחץ על תוצאה',top:'מהחיפושים המובילים'};
+const REASONS={zero:'החזיר 0 תוצאות לקונים',noClicks:'אף קונה לא לחץ על תוצאה',top:'מהחיפושים המובילים',lost:'עובד בחיפוש הקיים ולא אצלנו',fails:'נכשל בחיפוש הקיים'};
 
 // Picks the queries worth checking: zero results first, then searched-but-never-clicked, then the most searched.
 export function auditCandidates(signals,{limit=12}={}){
@@ -20,7 +21,7 @@ export function auditCandidates(signals,{limit=12}={}){
  return [...picked.values()];
 }
 const shopperRequest=c=>`בדיקה אוטומטית של חיפוש אמיתי: קונים חיפשו ״${c.query}״ ${c.searches} פעמים (${c.reasons.map(r=>REASONS[r]).join('; ')}). האם התוצאות הנוכחיות הן מה שקונה שמחפש ״${c.query}״ בחנות הזו מצפה לקבל? אם המוצר המבוקש לא קיים בקטלוג, תוצאות ריקות או חלופות קרובות מסומנות ככאלה תקינות.`;
-const fixRequest=(c,f)=>`החיפוש ״${c.query}״ לא מחזיר את מה שקונים מחפשים (${c.searches} חיפושים; ${c.reasons.map(r=>REASONS[r]).join('; ')}). ממצאי הבדיקה: ${String(f.problems||'התוצאות לא מתאימות').slice(0,1500)}.${f.clicked?.wantedVisible?.length?` מוצרים זמינים שקונים לחצו עליהם בחיפוש הזה: ${f.clicked.wantedVisible.map(x=>`${x.title} (${x.id})`).join(', ')}.`:''} תקן כך שקונה שמחפש ״${c.query}״ יקבל את המוצרים הנכונים מהקטלוג, ואם הם לא קיימים — אל תמציא התאמה.`;
+const fixRequest=(c,f)=>`החיפוש ״${c.query}״ לא מחזיר את מה שקונים מחפשים (${c.searches} חיפושים; ${c.reasons.map(r=>REASONS[r]).join('; ')}). ממצאי הבדיקה: ${String(f.problems||'התוצאות לא מתאימות').slice(0,1500)}.${f.targets?.length?` בחיפוש הקיים הקונים בחרו במוצרים האלה, והחיפוש שלנו חייב להחזיר אותם: ${f.targets.map(t=>`${t.title} (${t.id})`).join(', ')}.`:''}${f.clicked?.wantedVisible?.length?` מוצרים זמינים שקונים לחצו עליהם בחיפוש הזה: ${f.clicked.wantedVisible.map(x=>`${x.title} (${x.id})`).join(', ')}.`:''} תקן כך שקונה שמחפש ״${c.query}״ יקבל את המוצרים הנכונים מהקטלוג, ואם הם לא קיימים — אל תמציא התאמה.`;
 
 function searchContext(p,services={}){
  if(!p.searchIndex)p.searchIndex=buildSearchIndex(p.productCards,'audit-'+Date.now());
@@ -30,12 +31,13 @@ function searchContext(p,services={}){
 
 // Checks real shopper queries against the current rules; with fix=true each finding goes to the studio agent,
 // and a fix is kept only when its own verification passed (unverified attempts are discarded, never saved).
-export async function auditSearches(project,{model,judge=model,fix=false,limit=12,fixLimit=5,signals=readSearchSignals,services={},onEvent=async()=>{}}={}){
+export async function auditSearches(project,{model,judge=model,fix=false,limit=12,fixLimit=5,signals=readSearchSignals,source='signals',services={},onEvent=async()=>{}}={}){
  if(!project.productCards?.length)throw Error('נדרש קטלוג שמור');
  if(!Number.isInteger(limit)||limit<1||limit>30||!Number.isInteger(fixLimit)||fixLimit<0||fixLimit>10)throw Error('מגבלות בדיקה לא תקינות');
- await onEvent({type:'note',text:'קורא את החיפושים האמיתיים של הקונים'});
- const analytics=await signals(project),candidates=auditCandidates(analytics,{limit});
- if(!candidates.length)throw Error('אין עדיין נתוני חיפוש של קונים לבדיקה');
+ await onEvent({type:'note',text:source==='baseline'?'משווה לחיפוש הקיים':'קורא את החיפושים האמיתיים של הקונים'});
+ const fromBaseline=source==='baseline'?baselineCandidates(project,{limit}):null;
+ const analytics=fromBaseline?{from:project.baseline.since,to:project.baseline.builtAt,sampledSearches:project.baseline.totalSearches,clickTracking:true}:await signals(project),candidates=fromBaseline?fromBaseline.judged:auditCandidates(analytics,{limit});
+ if(!candidates.length&&!fromBaseline?.measured.length)throw Error(fromBaseline?'אין בבסיס חיפושים שאבדו או שנכשלים — אין מה לתקן':'אין עדיין נתוני חיפוש של קונים לבדיקה');
  let p=structuredClone(project);
  const ctx=searchContext(p,services),results=[];
  await onEvent({type:'note',text:`בודק ${candidates.length} חיפושים מול הכללים הנוכחיים`});
@@ -57,14 +59,18 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
   if(share>=0.6){r.status='data-gap';r.problems=`רוב הקליקים של הקונים (${Math.round(share*100)}%) הם על מוצרים שלא ניתן להציג: ${r.clicked.missing.length?`חסרים בקטלוג: ${r.clicked.missing.map(t=>`״${t}״`).join(', ')}`:''}${r.clicked.missing.length&&r.clicked.outOfStock.length?'; ':''}${r.clicked.outOfStock.length?`אזלו: ${r.clicked.outOfStock.map(t=>`״${t}״`).join(', ')}`:''}. זה פער בפיד המוצרים, לא בעיית חיפוש.`;}
  }
  // Most-searched problems are fixed first.
+ // Measured against production (lost queries) need no reviewer to be a problem.
+ if(fromBaseline)for(const m of fromBaseline.measured){results.push(m);const id=randomUUID();await onEvent({type:'tool',id,name:'audit_query',args:{query:m.query}});await onEvent({type:'tool_done',id,name:'audit_query',ok:false,text:`״${m.query}״ (${m.searches} חיפושים) — עובד בחיפוש הקיים, אצלנו חסרים ${m.missingTargets.length} מוצרים`,search:{query:m.query}});}
  const problems=results.filter(r=>r.status==='problem').sort((a,b)=>(b.searches||0)-(a.searches||0));
  if(fix)for(const r of problems.slice(0,fixLimit)){
   const id=randomUUID();await onEvent({type:'tool',id,name:'audit_fix',args:{query:r.query}});
   await onEvent({type:'note',text:`מתקן את ״${r.query}״`});
   let next=null,error=null;
   try{next=await studioAgent(p,fixRequest(r,r),{model,judge,services,verifyQueries:[r.query],onEvent:async e=>{if(e.type==='note')await onEvent(e);}});}catch(e){error=e.message;}
-  const reply=next?.messages.at(-1),verified=reply?.verification?.satisfied===true;
-  r.fix={status:error?'failed':verified?'fixed':'not-verified',message:error||reply?.text?.slice(0,1500),changes:reply?.changes||[],version:verified?reply.version:null};
+  const reply=next?.messages.at(-1);let verified=reply?.verification?.satisfied===true;
+  // A query lost against production is fixed only when the products shoppers chose come back.
+  if(verified&&r.targets?.length){const e=evaluateBaseline(next,next.revisions.at(-1).profile,next.baseline,{only:new Set([r.query])});const status=e?.results[0]?.status;if(!['kept','partial'].includes(status)){verified=false;error=null;r.baselineAfter=status;}}
+  r.fix={status:error?'failed':verified?'fixed':'not-verified',...(r.baselineAfter&&{note:'המוצרים שהקונים בחרו עדיין לא חוזרים'}),message:error||reply?.text?.slice(0,1500),changes:reply?.changes||[],version:verified?reply.version:null};
   if(verified){p=next;const after=await collectChecks(searchContext(p,services),[r.query]),wanted=after[0].products.filter(x=>!r.unwantedIds.includes(x.id)).slice(0,20).map(x=>x.id);
    if(wanted.length){const state=learningState(p);if(!state.examples.some(e=>normalize(e.query)===normalize(r.query))&&state.examples.length<100)state.examples.push({id:randomUUID(),query:r.query,includeIds:wanted,excludeIds:r.unwantedIds.filter(x=>!wanted.includes(x)).slice(0,20),status:'pending',source:'search-audit',createdAt:new Date().toISOString()});}}
   await onEvent({type:'tool_done',id,name:'audit_fix',ok:verified,text:`תיקון ״${r.query}״ — ${verified?`אומת ונשמר${r.fix.version?` כגרסה ${r.fix.version}`:''}`:error?`נכשל: ${error}`:'לא אומת, השינויים לא נשמרו'}`,search:{query:r.query}});
@@ -83,6 +89,18 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
  p.audit={at,fix,analyticsWindow:{from:analytics.from,to:analytics.to,searches:analytics.sampledSearches,clickTracking:analytics.clickTracking},results:results.map(({before,...r})=>r)};
  p.messages.push({role:'user',text:fix?'בדיקה ותיקון אוטומטי של החיפושים המובילים':'בדיקה אוטומטית של החיפושים המובילים',at},{role:'assistant',text:message,steps:[],changes:fixed.flatMap(r=>r.fix.changes),version:fixed.length?p.revisions.length:null,audit:true,at});p.messages=p.messages.slice(-80);
  p.productCardsProfileHash=hash(p.revisions.at(-1).profile);
+ if(fixed.length&&p.baseline){await onEvent({type:'note',text:'מעדכן את ההשוואה לחיפוש הקיים'});p.baselineEval={...evaluateBaseline(p,p.revisions.at(-1).profile),profileHash:hash(p.revisions.at(-1).profile),indexVersion:p.searchIndex?.version};}
  await onEvent({type:'message',text:message,changes:fixed.flatMap(r=>r.fix.changes),version:fixed.length?p.revisions.length:null});
  return p;
+}
+
+// From the production baseline: lost queries are measured problems (known targets); production failures go to the reviewer.
+export function baselineCandidates(p,{limit=12}={}){
+ if(!p.baseline||!p.baselineEval)throw Error('יש לבנות קודם השוואה לחיפוש הקיים');
+ const byQuery=new Map(p.baseline.queries.map(q=>[q.query,q])),ev=p.baselineEval.results;
+ const measured=ev.filter(r=>r.status==='lost'||r.status==='partial').sort((a,b)=>b.searches-a.searches).slice(0,limit).map(r=>{const b=byQuery.get(r.query);
+  return {query:r.query,reasons:['lost'],searches:r.searches,clicks:b.clicks,carts:b.carts,status:'problem',total:r.total,targets:b.targets,missingTargets:r.missing,unwantedIds:[],missingIds:r.missing.map(m=>m.id),
+   problems:`בחיפוש הקיים קונים בוחרים ב: ${b.targets.map(t=>`״${t.title}״`).join(', ')}; החיפוש שלנו לא מחזיר ${r.missing.map(m=>`״${m.title}״`).join(', ')}.`};});
+ const judged=ev.filter(r=>r.production==='fails').sort((a,b)=>b.searches-a.searches).slice(0,Math.max(0,limit-measured.length)).map(r=>({query:r.query,reasons:['fails'],searches:r.searches,zeroResults:null,clicks:0,carts:0}));
+ return {measured,judged};
 }

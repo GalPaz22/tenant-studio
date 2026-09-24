@@ -53,6 +53,8 @@
 <section class="side">
  <div class="tabs" role="tablist">
   <button role="tab" data-tab="search" aria-selected="true">חיפוש חי</button>
+  <button role="tab" data-tab="baseline" aria-selected="false">מול הקיים</button>
+  <button role="tab" data-tab="processing" aria-selected="false">עיבוד</button>
   <button role="tab" data-tab="product" aria-selected="false">מוצר</button>
   <button role="tab" data-tab="concierge" aria-selected="false">קונסיירז׳</button>
   <button role="tab" data-tab="versions" aria-selected="false">גרסאות וכללים</button>
@@ -72,6 +74,8 @@
   <div id="concierge-thread" class="concierge-thread"></div>
   <form id="concierge-chat" class="live-search" hidden><input id="concierge-message" maxlength="1000" placeholder="כתוב כמו לקוח בחנות"><button>שלח</button></form>
  </div>
+ <div class="pane" data-pane="baseline" hidden><div id="baseline" class="baseline"></div></div>
+ <div class="pane" data-pane="processing" hidden><div id="processing" class="baseline"></div></div>
  <div class="pane" data-pane="crawler" hidden><div id="crawler" class="crawler"></div></div>
  <div class="pane" data-pane="versions" hidden><div id="rules" class="rules"></div><div id="versions" class="versions"></div></div>
 </section>

@@ -2,6 +2,7 @@ import {MongoClient} from 'mongodb';
 import {buildSearchIndex} from './search-index.mjs';
 import {processProduct} from './core.mjs';
 import {hash} from './catalog.mjs';
+import {extractWithSpec,productKey,DEFAULT_SPEC,rx} from './scraper-builder.mjs';
 
 // Honest, identifiable crawler for a client's own public product pages: robots.txt is obeyed, one request at a time,
 // and the crawl stops by itself when the host starts refusing (redirect off-site, 403/429/503).
@@ -33,7 +34,7 @@ export function parseProductPage(html,url){
   author:list(d.author)||null,publisher:list(d.publisher)||null,type:String(d['@type']||''),isbn:d.isbn||null};
 }
 
-async function get(url,{fetcher=fetch}={}){
+export async function get(url,{fetcher=fetch}={}){
  const r=await fetcher(url,{redirect:'manual',headers:{'User-Agent':CRAWLER_UA,Accept:'text/html,application/xml;q=0.9,*/*;q=0.8'},signal:AbortSignal.timeout(20000)});
  const location=r.headers.get('location');
  if(r.status>=300&&r.status<400){const next=location&&new URL(location,url);if(!next||next.host!==new URL(url).host){const e=Error('הופנה אל '+(next?.host||'?'));e.blocked=true;throw e;}return get(next.href,{fetcher});}
@@ -44,14 +45,15 @@ async function get(url,{fetcher=fetch}={}){
 const locs=xml=>[...String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map(m=>m[1].replace(/&amp;/g,'&'));
 
 // Discovery: clicked products (what shoppers want) first, then product sitemaps, then product URLs already in the catalog.
-export async function seedCrawl(project,{fetcher=fetch,clicks=readClickedUrls,catalogUrls=p=>(p.productCards||[]).map(c=>c.url).filter(Boolean),sources:use={clicks:true,sitemap:true,catalog:true}}={}){
+export async function seedCrawl(project,{fetcher=fetch,clicks=readClickedUrls,catalogUrls=p=>(p.productCards||[]).map(c=>c.url).filter(Boolean),sources:use={clicks:true,sitemap:true,catalog:true},spec=null}={}){
  const origin=new URL(project.url).origin,robots=robotsRules(await get(origin+'/robots.txt',{fetcher}).catch(()=>'')),seen=new Map(),sources={clicks:0,sitemap:0,catalog:0};
- const add=(url,source)=>{const n=productNumber(url);if(!n||seen.has(n))return;const clean=origin+'/'+n;if(!robotsAllows(robots,clean))return;seen.set(n,clean);sources[source]++;};
+ // With a dedicated spec the product key and URL come from its productUrl rule; the default keeps numeric-id URLs.
+ const add=(url,source)=>{const n=spec?productKey(url,spec):productNumber(url);if(!n||seen.has(n))return;let clean;try{const u=new URL(url,origin);if(u.origin!==origin)return;u.hash='';clean=spec?u.href:origin+'/'+n;}catch{return;}if(!robotsAllows(robots,clean))return;seen.set(n,clean);sources[source]++;};
  if(use.clicks)try{for(const u of await clicks(project))add(u,'clicks');}catch{}
  if(use.sitemap){const index=await get(origin+'/sitemap.xml',{fetcher}).catch(()=>'');
-  for(const map of locs(index).filter(u=>/product/i.test(u))){await sleep(1000);for(const u of locs(await get(map,{fetcher}).catch(()=>'')))add(u,'sitemap');}}
+  for(const map of locs(index).filter(u=>rx(spec?.sitemapFilter||'product').test(u))){await sleep(1000);for(const u of locs(await get(map,{fetcher}).catch(()=>'')))add(u,'sitemap');}}
  if(use.catalog)try{for(const u of await catalogUrls(project))add(u,'catalog');}catch{}
- return {projectId:project.id,origin,status:'ready',robots,sources,queue:[...seen.values()],next:0,products:{},errors:{},failures:0,startedAt:new Date().toISOString()};
+ return {projectId:project.id,origin,status:'ready',robots,sources,queue:[...seen.values()],next:0,products:{},errors:{},failures:0,startedAt:new Date().toISOString(),dedicated:!!spec};
 }
 export async function readClickedUrls(project){
  const uri=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;if(!project.existingClient||!uri)return [];
@@ -63,12 +65,12 @@ export async function readClickedUrls(project){
 }
 
 // Runs (or resumes) the crawl, checkpointing every few pages. Returns the final state.
-export async function runCrawl(state,{store,fetcher=fetch,rateMs=1000,limit=Infinity,onProgress=()=>{},shouldStop=()=>false}={}){
+export async function runCrawl(state,{store,fetcher=fetch,rateMs=1000,limit=Infinity,onProgress=()=>{},shouldStop=()=>false,spec=null}={}){
  const delay=Math.max(rateMs,(state.robots?.delay||0)*1000);let fetched=0;state.status='running';await store.save(state);
  while(state.next<state.queue.length&&fetched<limit){
   if(shouldStop()){state.status='stopped';break;}
   const url=state.queue[state.next];
-  try{const page=parseProductPage(await get(url,{fetcher}),url);if(page?.sku)state.products[page.sku]={...page,crawledAt:new Date().toISOString()};else state.errors[url]='אין נתוני מוצר בדף';state.failures=0;state.next++;}
+  try{const html=await get(url,{fetcher}),page=spec?extractWithSpec(html,url,spec):parseProductPage(html,url),key=page&&(page.key||page.sku);if(key)state.products[key]={...page,sku:key,crawledAt:new Date().toISOString()};else state.errors[url]='אין נתוני מוצר בדף';state.failures=0;state.next++;}
   catch(e){
    if(e.blocked){state.failures++;if(state.failures>=3){state.status='blocked';state.blockedReason=e.message;break;}await sleep(60000*state.failures);continue;}
    if(Object.keys(state.errors).length<2000)state.errors[url]=e.message;state.next++;
@@ -82,10 +84,10 @@ export async function runCrawl(state,{store,fetcher=fetch,rateMs=1000,limit=Infi
 
 // Merges crawled pages into the working catalog: fills missing author/publisher, refreshes price and stock,
 // and adds products that the client database lacks. Returns counts; rebuilds the local index.
-export function mergeCrawl(p,state){
- const cards=p.productCards||[],byNumber=new Map();
- for(const c of cards){const n=productNumber(c.url)||String(c.id).split(':').pop();if(n)byNumber.set(n,c);}
- const sample=cards.find(c=>productNumber(c.url)&&String(c.id).endsWith(productNumber(c.url))),prefix=sample?String(sample.id).slice(0,-productNumber(sample.url).length):'crawl:';
+export function mergeCrawl(p,state,spec=null){
+ const cards=p.productCards||[],byNumber=new Map(),keyOf=url=>spec?productKey(url,spec):productNumber(url);
+ for(const c of cards){const n=keyOf(c.url)||String(c.id).split(':').pop();if(n)byNumber.set(n,c);}
+ const sample=cards.find(c=>keyOf(c.url)&&String(c.id).endsWith(keyOf(c.url))),prefix=sample?String(sample.id).slice(0,-keyOf(sample.url).length):'crawl:';
  const profile=p.revisions.at(-1).profile,client={...profile,tenantId:p.id,version:`studio-${p.revisions.length}`,publishedStatuses:['ACTIVE','publish']};
  const counts={updated:0,added:0,stockChanged:0,authorsFilled:0};
  for(const page of Object.values(state.products||{})){
@@ -95,12 +97,13 @@ export function mergeCrawl(p,state){
    const specs={...card.specifications};
    if(page.author&&!specs.author){specs.author=page.author;counts.authorsFilled++;touched=true;}
    if(page.publisher&&!specs.publisher){specs.publisher=page.publisher;touched=true;}
+   for(const [k,v] of Object.entries(page.extra||{}))if(v&&!specs[k]){specs[k]=v;touched=true;}
    if(page.stockStatus!=='unknown'&&page.stockStatus!==card.stockStatus){card.stockStatus=page.stockStatus;counts.stockChanged++;touched=true;}
    if(page.price!==null&&page.price!==card.price){card.price=page.price;touched=true;}
    if(!card.description&&page.description){card.description=page.description;touched=true;}
    card.specifications=specs;card.provenance={...card.provenance,siteCrawl:{at,url:page.url}};if(touched)counts.updated++;
   }else{
-   const raw={id:prefix+page.sku,name:page.name,description:page.description,categories:[],tags:[],specifications:{...(page.author&&{author:page.author}),...(page.publisher&&{publisher:page.publisher}),...(page.isbn&&{isbn:String(page.isbn)})},url:page.url,image:page.image,price:page.price,currency:page.currency,stockStatus:page.stockStatus,status:'ACTIVE',source:'site-crawl'};
+   const raw={id:prefix+page.sku,name:page.name,description:page.description,categories:[],tags:[],specifications:{...page.extra,...(page.author&&{author:page.author}),...(page.publisher&&{publisher:page.publisher}),...(page.isbn&&{isbn:String(page.isbn)})},url:page.url,image:page.image,price:page.price,currency:page.currency,stockStatus:page.stockStatus,status:'ACTIVE',source:'site-crawl'};
    const c=processProduct(raw,client);c.provenance={...c.provenance,siteCrawl:{at,url:page.url}};cards.push(c);p.catalog.products.push(raw);byNumber.set(page.sku,c);counts.added++;
   }
  }

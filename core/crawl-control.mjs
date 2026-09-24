@@ -25,7 +25,8 @@ export function crawlStatus(meta,settings,merged=null,{now=Date.now()}={}){
   pagesPerMinute:running?Math.round(pace*60):0,etaMinutes:running&&pace>0?Math.round((total-done)/pace/60):null,
   blockedReason:meta.blockedReason||null,lastMerge:merged,unmerged:Math.max(0,products-(merged?.pages||0)),settings};
 }
-export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null};};
+// An activated dedicated scraper travels with the job; without one the worker uses the generic JSON-LD extractor.
+export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null,spec:p.scraper?.status==='active'?p.scraper.spec:null};};
 export async function startCrawl(p,store,{reseed=false}={}){
  const meta=await store.meta(p.id);
  await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:reseed||!meta?.total});

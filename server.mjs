@@ -1,9 +1,12 @@
 import {workspaceAgent} from './core/workspace-agent.mjs';
 import {studioAgent,tools as studioTools} from './core/studio-agent.mjs';
 import {auditSearches} from './core/search-audit.mjs';
-import {mergeCrawl} from './core/site-crawler.mjs';
+import {readProductionSignals,buildBaseline,evaluateBaseline} from './core/baseline.mjs';
+import {researchProcessing,trialPlan,runPlan} from './core/processing-lab.mjs';
+import {buildScraper,sampleProductUrls} from './core/scraper-builder.mjs';
+import {mergeCrawl,get as getPage} from './core/site-crawler.mjs';
 import {createCrawlDb} from './core/crawl-store.mjs';
-import {crawlStatus,crawlSettings,startCrawl,stopCrawl,validateSettings,ensureLocalWorker} from './core/crawl-control.mjs';
+import {crawlStatus,crawlSettings,crawlTarget,startCrawl,stopCrawl,validateSettings,ensureLocalWorker} from './core/crawl-control.mjs';
 import {conciergeTurn,decideTrigger,outOfStockHits,settingsOf} from './core/concierge.mjs';
 import {analyzeExisting,reindexExisting} from './core/fast-track.mjs';
 import {loadExistingClient,refreshSourceFields,dbFields,dbSearch,importDbField} from './existing-client.mjs';
@@ -18,7 +21,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {createStore} from './store.mjs';
 import {discover} from './discover.mjs';
-import {askAgent,askChatAgent,askStudioAgent,askJudgeAgent,studioModel,chatModel,contract,validateProfile} from './model.mjs';
+import {askAgent,askChatAgent,askStudioAgent,askJudgeAgent,askPlanner,askProcessing,studioModel,chatModel,contract,validateProfile} from './model.mjs';
 import {createDraftRuntime,indexDefinition} from './runtime.mjs';
 import {provision} from './provision.mjs';
 import {buildArtifacts} from './artifacts.mjs';
@@ -40,11 +43,14 @@ const agentLogs=createStore(resolve(dataDir,'agent-logs'));
 const store=createStore(dataDir),runs=createRunStore(resolve(dataDir,'runs'));
 const queue=new Set();let draining=false;
 const locks=new Set(),runtimes=new Map();let active=0;
-const port=Number(process.env.STUDIO_PORT||4320),token=randomUUID();
+const port=Number(process.env.PORT||process.env.STUDIO_PORT||4320),token=randomUUID();
+const allowRemote=process.env.ALLOW_REMOTE==='true'||!!process.env.RENDER||process.env.NODE_ENV==='production';
 const app=express();app.use(express.json({limit:'32kb',verify:(req,_res,buffer)=>{req.rawBody=buffer;}}));
 app.use((req,res,next)=>{
- if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host))return res.status(403).json({code:'HOST_DENIED',error:'יש לפתוח את ה־Studio בכתובת המקומית שלו'});
- if(req.headers.origin&&!['http://127.0.0.1:'+port,'http://localhost:'+port].includes(req.headers.origin))return res.status(403).json({code:'ORIGIN_DENIED',error:'מקור הבקשה אינו מורשה'});
+ if(!allowRemote){
+  if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host))return res.status(403).json({code:'HOST_DENIED',error:'יש לפתוח את ה־Studio בכתובת המקומית שלו'});
+  if(req.headers.origin&&!['http://127.0.0.1:'+port,'http://localhost:'+port].includes(req.headers.origin))return res.status(403).json({code:'ORIGIN_DENIED',error:'מקור הבקשה אינו מורשה'});
+ }
  res.set('Cache-Control','no-store');next();
 });
 app.get('/api/session',(_req,res)=>res.json({token}));
@@ -242,7 +248,7 @@ app.post('/api/projects/:id/studio',route(async(req,res)=>locked(req.params.id,a
 const crawlDb=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI?createCrawlDb():null,crawls=app.locals.crawlStore||crawlDb?.store;
 const needCrawls=()=>{const s=app.locals.crawlStore||crawls;if(!s)throw Error('הסורק דורש חיבור MongoDB');return s;};
 async function mergeCrawled(id){const s=await needCrawls().read(id);if(!s||!Object.keys(s.products).length)throw Error('אין עדיין דפים שנסרקו למיזוג');
- const p=await store.read(id);const counts=mergeCrawl(p,s);await persist(p);runtimes.clear();return {...counts,pages:Object.keys(s.products).length};}
+ const p=await store.read(id);const counts=mergeCrawl(p,s,p.scraper?.status==='active'?p.scraper.spec:null);await persist(p);runtimes.clear();return {...counts,pages:Object.keys(s.products).length};}
 const crawlView=async id=>{const p=await store.read(id);return {...crawlStatus(await needCrawls().meta(id),crawlSettings(p),p.siteCrawl||null),workerMode:process.env.STUDIO_CRAWL_WORKER==='local'?'local':'cloud'};};
 app.get('/api/projects/:id/crawl',route(async(req,res)=>res.json(await crawlView(req.params.id))));
 app.post('/api/projects/:id/crawl/start',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);await startCrawl(p,needCrawls(),{reseed:req.body?.reseed===true});if(process.env.STUDIO_CRAWL_WORKER==='local')await ensureLocalWorker(dataDir);res.json(await crawlView(p.id));})));
@@ -251,14 +257,57 @@ app.post('/api/projects/:id/crawl/settings',route(async(req,res)=>locked(req.par
 app.post('/api/projects/:id/crawl/merge',route(async(req,res)=>locked(req.params.id,async()=>{const counts=await mergeCrawled(req.params.id);res.json({...counts,crawl:await crawlView(req.params.id)});})));
 // Auto-merge: every 10 minutes, tenants that enabled it get newly crawled pages merged (skipped while the project is busy).
 if(crawls)setInterval(async()=>{try{for(const {id} of await store.list()){if(locks.has(id))continue;const p=await store.read(id);if(!crawlSettings(p).autoMerge)continue;const m=await crawls.meta(id);if(!m||(m.productCount||0)<=(p.siteCrawl?.pages||0))continue;await locked(id,()=>mergeCrawled(id)).catch(()=>{});}}catch(e){console.error('auto-merge',e.message);}},10*60*1000).unref();
+// Production baseline: what the current search does for real shoppers (works → must be kept, fails → must improve),
+// evaluated against the working rules. Every agent save is guarded against losing what is kept.
+function baselineView(p){
+ const b=p.baseline,e=p.baselineEval;if(!b)return {status:'none'};
+ const byQuery=new Map(b.queries.map(q=>[q.query,q])),rows=s=>(e?.results||[]).filter(r=>r.status===s).map(r=>({...r,targets:byQuery.get(r.query)?.targets,unavailable:byQuery.get(r.query)?.unavailable,productionTop:byQuery.get(r.query)?.productionTop,productionZeroRate:byQuery.get(r.query)?.productionZeroRate}));
+ return {status:'ready',builtAt:b.builtAt,days:b.days,totalQueries:b.totalQueries,totalSearches:b.totalSearches,tracked:b.queries.length,evaluatedAt:e?.at||null,stale:!!e&&(e.profileHash!==hash(p.revisions.at(-1).profile)||e.indexVersion!==p.searchIndex?.version),summary:e?.summary||null,
+  lost:rows('lost').slice(0,60),partial:rows('partial').slice(0,40),gaps:rows('gap').slice(0,60),fails:(e?.results||[]).filter(r=>r.production==='fails').slice(0,40)};
+}
+const evaluateStored=p=>{const e=evaluateBaseline(p,p.revisions.at(-1).profile);p.baselineEval={...e,profileHash:hash(p.revisions.at(-1).profile),indexVersion:p.searchIndex?.version};};
+app.get('/api/projects/:id/baseline',route(async(req,res)=>res.json(baselineView(await store.read(req.params.id)))));
+app.post('/api/projects/:id/baseline/build',route(async(req,res)=>locked(req.params.id,async()=>{
+ const days=req.body?.days??30;if(!Number.isInteger(days)||days<7||days>180)throw Error('טווח ימים לא תקין');
+ const p=await store.read(req.params.id);p.baseline=buildBaseline(p,await (app.locals.productionSignals||readProductionSignals)(p,{days}));evaluateStored(p);await persist(p);res.json(baselineView(p));
+})));
+app.post('/api/projects/:id/baseline/evaluate',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);if(!p.baseline)throw Error('יש לבנות קודם את הבסיס');evaluateStored(p);await persist(p);res.json(baselineView(p));})));
+// Processing lab: a strong model researches this tenant and proposes processing; each plan is tried on a sample,
+// then run and measured against the production baseline (rolled back if it loses anything that works).
+const streamed=(req,res,work)=>locked(req.params.id,async()=>{
+ res.status(200).set({'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
+ let closed=false;res.on('close',()=>{closed=true;});const send=e=>{if(!closed)res.write(JSON.stringify(e)+'\n');};
+ try{send({type:'done',...await work(send)});}catch(e){send({type:'error',message:e.message});}res.end();
+});
+app.get('/api/projects/:id/processing',route(async(req,res)=>{const p=await store.read(req.params.id);res.json(p.processingLab||{status:'none'});}));
+app.post('/api/projects/:id/processing/research',route(async(req,res)=>streamed(req,res,async send=>{
+ const p=await store.read(req.params.id);const lab=await researchProcessing(p,{planner:app.locals.planner||askPlanner,dbFields:p.existingClient?dbFields:async()=>null,onEvent:async e=>send(e)});await persist(p);return {lab};
+})));
+app.post('/api/projects/:id/processing/:plan/trial',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);const plan=await trialPlan(p,req.params.plan,{worker:app.locals.processingWorker||askProcessing,dbSearch});await persist(p);res.json(plan);})));
+app.post('/api/projects/:id/processing/:plan/run',route(async(req,res)=>streamed(req,res,async send=>{
+ const p=await store.read(req.params.id);const r=await runPlan(p,req.params.plan,{worker:app.locals.processingWorker||askProcessing,importField:importDbField,onEvent:async e=>send(e)});await persist(p);runtimes.clear();return {result:r,lab:p.processingLab};
+})));
+// Dedicated scraper: the planner model writes a product-page spec from sample pages; validated against the catalog,
+// activated by the operator, then used by the tenant's crawl (a reseed builds the page list with its URL rule).
+app.get('/api/projects/:id/scraper',route(async(req,res)=>{const p=await store.read(req.params.id);res.json(p.scraper||{status:'none'});}));
+app.post('/api/projects/:id/scraper/build',route(async(req,res)=>streamed(req,res,async send=>{
+ const p=await store.read(req.params.id);if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS');
+ const fetchPage=app.locals.fetchPage||(async url=>{await new Promise(r=>setTimeout(r,1000));return getPage(url);});
+ const urls=await sampleProductUrls(p,{fetchPage,count:8});
+ const scraper=await buildScraper(p,{planner:app.locals.planner||askPlanner,fetchPage,samples:urls.slice(0,4),validation:urls.slice(4),onEvent:async e=>send(e)});await persist(p);return {scraper};
+})));
+app.post('/api/projects/:id/scraper/:action(activate|deactivate)',route(async(req,res)=>locked(req.params.id,async()=>{
+ const p=await store.read(req.params.id);if(!p.scraper?.spec)throw Error('אין סורק ייעודי');p.scraper.status=req.params.action==='activate'?'active':'draft';await persist(p);
+ const s=app.locals.crawlStore||crawls;if(s&&await s.meta(p.id))await s.control(p.id,{target:crawlTarget(p)});res.json(p.scraper);
+})));
 // Automatic check of real shopper queries (zero results, no clicks, top), optionally fixing findings. Streams NDJSON like /studio.
 app.post('/api/projects/:id/audit',route(async(req,res)=>locked(req.params.id,async()=>{
- const {fix=false,limit=12,fixLimit=5}=req.body||{};if(typeof fix!=='boolean')throw Error('בקשה לא תקינה');
+ const {fix=false,limit=12,fixLimit=5,source='signals'}=req.body||{};if(typeof fix!=='boolean'||!['signals','baseline'].includes(source))throw Error('בקשה לא תקינה');
  const p=await store.read(req.params.id);if(!p.revisions.length||!p.productCards?.length)throw Error('ללקוח הזה עדיין אין קטלוג שמור');
  res.status(200).set({'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
  let closed=false;res.on('close',()=>{closed=true;});const send=event=>{if(!closed)res.write(JSON.stringify(event)+'\n');};
  try{
-  const next=await auditSearches(p,{fix,limit,fixLimit,model:app.locals.studioAgent||askStudioAgent,judge:app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent,services:app.locals.studioServices,signals:app.locals.searchSignals,onEvent:async e=>send(e)});
+  const next=await auditSearches(p,{fix,limit,fixLimit,source,model:app.locals.studioAgent||askStudioAgent,judge:app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent,services:app.locals.studioServices,signals:app.locals.searchSignals,onEvent:async e=>send(e)});
   await persist(next);runtimes.clear();send({type:'done',project:await projectSummary(next)});
  }catch(e){send({type:'error',message:e.message});}
  res.end();
@@ -347,4 +396,4 @@ app.get('/',(_req,res)=>res.sendFile(dir+'public/studio.html'));
 app.use(express.static(dir+'public'));
 app.use((error,_req,res,_next)=>{if(res.headersSent){res.end();return;}res.status(400).json({error:error.message});});
 export {app};
-if(import.meta.url===pathToFileURL(resolve(process.argv[1])).href)app.listen(port,'127.0.0.1',()=>{console.log(`Tenant Studio: http://127.0.0.1:${port}`);recoverBuilds().catch(console.error);});
+if(import.meta.url===pathToFileURL(resolve(process.argv[1])).href){const host=process.env.HOST||'0.0.0.0';app.listen(port,host,()=>{console.log(`Tenant Studio: http://${host==='0.0.0.0'?'127.0.0.1':host}:${port}`);recoverBuilds().catch(console.error);});}

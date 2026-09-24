@@ -48,7 +48,7 @@ function renderClient(){
  $('client-version').hidden=!project?.revisions?.length;$('client-version').textContent='גרסה '+(project?.revisions?.length||0);
  $('model').textContent=project?.studioModel?'מודל: '+project.studioModel:'';
  $('message').disabled=false;$('send').disabled=false;$('query').disabled=false;$('live-search').querySelector('button').disabled=false;
- renderThread();renderVersions();renderConcierge();setAuditButtons();if(!document.querySelector('[data-pane="crawler"]').hidden)renderCrawler();
+ renderThread();renderVersions();renderConcierge();setAuditButtons();if(!document.querySelector('[data-pane="crawler"]').hidden)renderCrawler();if(!document.querySelector('[data-pane="baseline"]').hidden)renderBaseline();if(!document.querySelector('[data-pane="processing"]').hidden)renderProcessing();
  if(project&&!ready)$('thread').append(el('div',{class:'notice'},'ללקוח הזה עדיין אין קטלוג ואינדקס שמורים. בנה אותו ב',el('a',{href:'/index.html?tenant='+project.id},'ממשק המתקדם'),' ואז חזור לכאן.'));
 }
 
@@ -130,7 +130,7 @@ function showPanel(name){
  for(const b of document.querySelectorAll('.panel-switch button'))b.classList.toggle('on',b.dataset.show===name);
 }
 for(const b of document.querySelectorAll('.panel-switch button'))b.onclick=()=>showPanel(b.dataset.show);
-function tab(name){if(name==='crawler')setTimeout(renderCrawler);if(matchMedia('(max-width: 1100px)').matches)showPanel('side');for(const b of document.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',String(b.dataset.tab===name));for(const p of document.querySelectorAll('[data-pane]'))p.hidden=p.dataset.pane!==name;}
+function tab(name){if(name==='crawler')setTimeout(renderCrawler);if(name==='processing')setTimeout(renderProcessing);if(name==='baseline')setTimeout(renderBaseline);if(matchMedia('(max-width: 1100px)').matches)showPanel('side');for(const b of document.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',String(b.dataset.tab===name));for(const p of document.querySelectorAll('[data-pane]'))p.hidden=p.dataset.pane!==name;}
 for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);
 
 let lastSearch=null;
@@ -205,12 +205,85 @@ async function showProduct(productId){
  }catch(err){root.replaceChildren(el('p',{class:'error'},err.message));}
 }
 
+// ---------- production baseline: what the current search does, what we must keep and where we must deliver ----------
+async function renderBaseline(){
+ const root=$('baseline');if(!root||!project)return;const id=project.id;
+ let b;try{b=await api('/projects/'+id+'/baseline');}catch(err){root.replaceChildren(el('p',{class:'error'},err.message));return;}
+ if(project?.id!==id)return;
+ const run=async(path,label)=>{root.prepend(el('p',{class:'working'},label));try{await api('/projects/'+id+'/baseline/'+path,{});}catch(err){toast(err.message);}renderBaseline();};
+ const intro=el('p',{class:'meta'},'המטרה להחליף את החיפוש הקיים: לשמור כל מה שעובד בו (חיפושים שקונים לחצו או הוסיפו לסל) ולשפר איפה שהוא נכשל. כל שינוי כללים נחסם אם הוא מאבד חיפוש שנשמר.');
+ if(b.status==='none'){root.replaceChildren(el('h3',{},'השוואה לחיפוש הקיים'),intro,el('button',{type:'button',class:'primary',onclick:()=>run('build','בונה השוואה מ־30 ימי חיפוש…')},'בנה השוואה (30 ימים)'));return;}
+ const s=b.summary||{},num=v=>(v??0).toLocaleString('he-IL'),pct=v=>v==null?'—':Math.round(v*100)+'%';
+ const row=(r,extra)=>el('div',{class:'row'},el('div',{class:'q'},el('b',{},r.query),el('small',{},`${num(r.searches)} חיפושים`)),extra,el('div',{class:'actions'},
+  el('button',{type:'button',class:'link',onclick:()=>runSearch(r.query)},'פתח בחיפוש החי'),
+  el('button',{type:'button',class:'link',onclick:()=>{$('message').value=`החיפוש ״${r.query}״ ${r.status==='lost'||r.status==='partial'?`עובד בחיפוש הקיים ולא אצלנו. קונים בוחרים ב: ${(r.targets||[]).map(t=>t.title).join(', ')}. תקן בלי לפגוע בחיפושים אחרים.`:'נכשל בחיפוש הקיים. בדוק מה קונים מחפשים ותקן.'}`;$('message').focus();}},'שלח לאייג׳נט')));
+ const list=(title,rows,render,open=false)=>rows?.length?el('details',{open},el('summary',{},`${title} (${rows.length})`),rows.map(render)):null;
+ root.replaceChildren(
+  el('h3',{},'השוואה לחיפוש הקיים'),intro,
+  el('p',{},el('span',{class:'score'},pct(s.keptShare)),' מהחיפושים שעובדים היום נשמרים אצלנו (משוקלל לפי מספר חיפושים)'),
+  el('div',{class:'tiles'},
+   el('div',{class:'tile'},el('b',{},num(s.kept)),el('small',{},'נשמרים')),el('div',{class:'tile'},el('b',{},num(s.partial)),el('small',{},'חלקית')),el('div',{class:'tile'},el('b',{},num(s.lost)),el('small',{},'אבודים — לתקן')),
+   el('div',{class:'tile'},el('b',{},num(s.gaps)),el('small',{},'פער בקטלוג')),el('div',{class:'tile'},el('b',{},num(s.productionFails)),el('small',{},'נכשלים בקיים')),el('div',{class:'tile'},el('b',{},num(s.failsWeAnswer)),el('small',{},'מהם אנחנו עונים'))),
+  el('p',{class:'meta'},`${num(b.tracked)} החיפושים הנפוצים מתוך ${num(b.totalQueries)} (${num(b.totalSearches)} חיפושים ב־${b.days} ימים) · נבנה ${new Date(b.builtAt).toLocaleString('he-IL')}`,b.stale?el('span',{class:'stale'},' · הכללים או הקטלוג השתנו מאז ההערכה'):null),
+  el('div',{class:'actions'},
+   el('button',{type:'button',class:'primary',disabled:!(s.lost||s.partial),onclick:()=>{if(confirm('לתקן אוטומטית עד 5 חיפושים שעובדים בקיים ולא אצלנו? נשמר רק תיקון שמחזיר את המוצרים שהקונים בחרו ולא פוגע בחיפושים אחרים.'))streamTurn('תיקון אוטומטי מול החיפוש הקיים','/projects/'+id+'/audit',{fix:true,source:'baseline'}).then(renderBaseline);}},'תקן אבודים'),
+   el('button',{type:'button',class:'ghost',onclick:()=>run('evaluate','מעריך מחדש…')},'הערך מחדש'),
+   el('button',{type:'button',class:'ghost',onclick:()=>run('build','בונה מחדש מנתוני החיפוש…')},'בנה מחדש מהנתונים')),
+  list('אבודים — עובד בקיים, לא אצלנו',b.lost,r=>row(r,el('small',{},'חסרים: '+r.missing.map(m=>m.title).join(' · '))),true),
+  list('חלקית',b.partial,r=>row(r,el('small',{},'חסרים: '+r.missing.map(m=>m.title).join(' · ')))),
+  list('נכשלים בחיפוש הקיים',b.fails,r=>row(r,el('small',{},r.status==='answers'?`אצלנו ${num(r.total)} תוצאות — כדאי לבדוק שהן נכונות`:'גם אצלנו אין תוצאות'))),
+  list('פער בקטלוג — מה שקונים בוחרים חסר או אזל',b.gaps,r=>row(r,el('small',{},(r.unavailable||[]).map(u=>`${u.title} (${u.inCatalog?'אזל':'חסר בקטלוג'})`).join(' · ')))));
+}
+
+// ---------- processing lab: research by a strong model → sample trial → run measured against production ----------
+const PLAN_STATUS={proposed:'הוצע',tried:'נוסה על דוגמה',done:'בוצע',reverted:'בוטל — פגע בחיפושים שעובדים',empty:'לא נמצאו ערכים'};
+const PLAN_KIND={import_db_field:'ייבוא שדה מהמסד',derive_field:'שדה נגזר במודל',extract_pattern:'חילוץ לפי תבנית'};
+async function streamInto(root,path,body){const status=el('p',{class:'working'},'מתחיל…');root.prepend(status);let last=null;
+ try{await connection.stream(path,body,e=>{if(e.type==='note')status.textContent=e.text;else if(e.type==='error')toast(e.message);else if(e.type==='done')last=e;});}catch(err){toast(err.message);}status.remove();return last;}
+async function renderProcessing(){
+ const root=$('processing');if(!root||!project)return;const id=project.id;
+ let lab;try{lab=await api('/projects/'+id+'/processing');}catch(err){root.replaceChildren(el('p',{class:'error'},err.message));return;}
+ if(project?.id!==id)return;
+ const research=async()=>{await streamInto(root,'/projects/'+id+'/processing/research',{});renderProcessing();};
+ const head=[el('h3',{},'עיבוד ייעודי ללקוח'),el('p',{class:'meta'},'מודל חזק חוקר את הלקוח — מה עובד בחיפוש הקיים ואצלנו לא, אילו שדות חסרים, מה יש במסד ובסריקה — ומציע עיבודים עם החיפושים שכל אחד אמור לתקן. כל עיבוד נוסה קודם על דוגמה, ואחרי הרצה נמדד מול החיפוש הקיים; אם הוא פוגע בחיפוש שעובד, הוא מבוטל אוטומטית.'),
+  el('button',{type:'button',class:lab.plans?'ghost':'primary',onclick:research},lab.plans?'חקור מחדש':'חקור והצע עיבודים')];
+ if(!lab.plans){root.replaceChildren(...head);return;}
+ const pct=v=>v==null?'—':Math.round(v*100)+'%';
+ root.replaceChildren(...head,el('p',{class:'meta'},`מחקר מ־${new Date(lab.at).toLocaleString('he-IL')}`),el('div',{class:'md'},markdown(lab.summary)),
+  lab.rejectedPlans?.length?el('details',{},el('summary',{},`הצעות שנפסלו (${lab.rejectedPlans.length})`),el('ul',{},lab.rejectedPlans.map(x=>el('li',{},`${x.title} — ${x.reason}`)))):null,
+  ...(lab.plans.length?lab.plans.map(plan=>el('div',{class:'plan'},
+   el('b',{},plan.title),el('div',{class:'kind'},`${PLAN_KIND[plan.kind]} · ${plan.source} → specifications.${plan.target}${plan.scope&&Object.keys(plan.scope).length?' · היקף: '+JSON.stringify(plan.scope):''}`),
+   el('p',{},plan.why),plan.instruction?el('p',{class:'meta'},'הנחיה: '+plan.instruction):null,plan.pattern?el('p',{class:'meta',dir:'ltr'},plan.pattern):null,
+   plan.expectedQueries?.length?el('div',{class:'chips-inline'},el('small',{},`אמור לתקן (${(plan.searches||0).toLocaleString('he-IL')} חיפושים):`),plan.expectedQueries.map(q=>el('span',{},q))):null,
+   plan.risk?el('p',{class:'meta'},'סיכון: '+plan.risk):null,
+   el('p',{},el('b',{},PLAN_STATUS[plan.status]||plan.status)),
+   plan.trial?el('details',{open:plan.status==='tried'},el('summary',{},`דוגמה (${plan.trial.rows.length})`),el('table',{},el('tr',{},el('th',{},'מוצר'),el('th',{},'לפני'),el('th',{},'אחרי')),plan.trial.rows.map(r=>el('tr',{},el('td',{},r.title),el('td',{},r.before??''),el('td',{},r.after||'—'))))):null,
+   plan.trial?.estimate?el('p',{class:'meta'},`הרצה מלאה: ${plan.trial.estimate.products.toLocaleString('he-IL')} מוצרים${plan.trial.estimate.modelCalls?` · ${plan.trial.estimate.distinct.toLocaleString('he-IL')} ערכים שונים · כ־${plan.trial.estimate.modelCalls.toLocaleString('he-IL')} קריאות למודל`:''}${plan.trial.estimate.tooLarge?' · גדול מדי, צריך לצמצם היקף':''}`):null,
+   plan.result?.delta?el('p',{},`שמירה מול הקיים: ${pct(plan.result.delta.keptBefore)} → ${pct(plan.result.delta.keptAfter)} · ${plan.result.updated.toLocaleString('he-IL')} מוצרים עודכנו`,plan.result.delta.newlyKept?.length?el('small',{},' · חזרו לעבוד: '+plan.result.delta.newlyKept.join(', ')):null,plan.result.delta.lost?.length?el('small',{class:'stale'},' · נפגעו: '+plan.result.delta.lost.join(', ')):null):null,
+   ['proposed','tried'].includes(plan.status)?el('div',{class:'actions'},
+    el('button',{type:'button',class:'ghost',onclick:async e=>{e.target.disabled=true;e.target.textContent='מנסה…';try{await api('/projects/'+id+'/processing/'+plan.id+'/trial',{});}catch(err){toast(err.message);}renderProcessing();}},'נסה על דוגמה'),
+    el('button',{type:'button',class:'primary',disabled:plan.status!=='tried',title:plan.status!=='tried'?'נסה קודם על דוגמה':'',onclick:async()=>{if(!confirm(`להריץ "${plan.title}" על כל המוצרים בהיקף? התוצאה תימדד מול החיפוש הקיים ותבוטל אם תפגע בחיפוש שעובד.`))return;const r=await streamInto(root,'/projects/'+id+'/processing/'+plan.id+'/run',{});if(r?.result?.reverted)toast('העיבוד בוטל: הוא פגע בחיפושים שעובדים בקיים');else if(r?.result)toast(`עודכנו ${r.result.updated} מוצרים`);project=await api('/projects/'+id);renderProcessing();}},'הרץ ומדוד')):null)):[el('p',{class:'meta'},'המחקר לא מצא עיבוד שמוצדק לפי הראיות.')]));
+}
+
 // ---------- site crawler (per tenant) ----------
 const CRAWL_STATUS={none:'לא הופעל',ready:'מוכן',running:'רץ',waiting:'ממתין ל־worker',paused:'מושהה',stopped:'נעצר',done:'הסתיים',blocked:'נחסם על ידי האתר',interrupted:'נקטע — ה־worker הפסיק לדווח'};
 let crawlTimer=null;
+// Dedicated scraper: the planner model writes extraction rules from sample pages; validated, then activated by the operator.
+function scraperSection(sc,id){
+ const pct=v=>v==null?'—':Math.round(v*100)+'%',v=sc.validation;
+ const build=async e=>{e.target.disabled=true;await streamInto($('crawler'),'/projects/'+id+'/scraper/build',{});renderCrawler();};
+ const toggle=async action=>{try{await api('/projects/'+id+'/scraper/'+action,{});toast(action==='activate'?'הסורק הייעודי פעיל. לחץ ״רענן רשימת דפים״ כדי לבנות את התור לפי הכללים שלו.':'חזרה לסורק הכללי');}catch(err){toast(err.message);}renderCrawler();};
+ return el('fieldset',{},el('legend',{},'סורק ייעודי ללקוח'),
+  el('p',{class:'meta'},'מודל חזק לומד כמה דפי מוצר מהאתר וכותב כללי חילוץ ייעודיים (איזה כתובת היא דף מוצר, איפה השם, המחיר, המלאי ושדות נוספים). הכללים נבדקים על דפים נוספים ומול הקטלוג לפני שמפעילים אותם.'),
+  sc.status==='none'?el('p',{},'עכשיו: סורק כללי (נתוני JSON-LD).'):el('p',{},el('b',{},sc.status==='active'?'פעיל':'טיוטה — לא פעיל'),sc.recommended===false?el('span',{class:'stale'},' · הבדיקה לא עברה את הסף — מומלץ לבנות מחדש'):sc.recommended?' · עבר את הבדיקה':'',` · נבנה ${new Date(sc.builtAt).toLocaleString('he-IL')}`),
+  v?el('dl',{class:'stats'},el('dt',{},'דפים שנבדקו'),el('dd',{},String(v.pages)),el('dt',{},'שם / מחיר / מלאי'),el('dd',{},`${pct(v.fill.name)} / ${pct(v.fill.price)} / ${pct(v.fill.stock)}`),el('dt',{},'מזהה מוצר'),el('dd',{},pct(v.fill.key)),el('dt',{},'התאמה לקטלוג'),el('dd',{},pct(v.catalogAgreement))):null,
+  v?el('details',{},el('summary',{},'דוגמאות וכללים'),el('ul',{},v.rows.map(r=>el('li',{},`${r.name||'—'} · ${r.price??'—'} · ${r.stockStatus||'—'}${r.author?' · '+r.author:''}`))),el('pre',{dir:'ltr'},JSON.stringify(sc.spec,null,1))):null,
+  el('div',{class:'actions'},el('button',{type:'button',class:'ghost',onclick:build},sc.status==='none'?'בנה סורק ייעודי':'בנה מחדש'),
+   sc.status==='draft'?el('button',{type:'button',class:'primary',onclick:()=>toggle('activate')},'הפעל'):null,sc.status==='active'?el('button',{type:'button',class:'ghost',onclick:()=>toggle('deactivate')},'חזור לסורק הכללי'):null));
+}
 async function renderCrawler(){
  const root=$('crawler');if(!root||!project)return;clearTimeout(crawlTimer);const id=project.id;
- let c;try{c=await api('/projects/'+id+'/crawl');}catch(err){root.replaceChildren(el('p',{class:'error'},err.message));return;}
+ let c,sc;try{[c,sc]=await Promise.all([api('/projects/'+id+'/crawl'),api('/projects/'+id+'/scraper')]);}catch(err){root.replaceChildren(el('p',{class:'error'},err.message));return;}
  if(project?.id!==id)return;
  const act=async(path,body,label)=>{try{const r=await api('/projects/'+id+'/crawl/'+path,body);if(r.added!==undefined)toast(`מוזגו ${r.pages} דפים: ${r.added} מוצרים נוספו, ${r.updated} עודכנו, ${r.authorsFilled} מחברים הושלמו`);if(path==='merge')project=await api('/projects/'+id);}catch(err){toast(err.message);}renderCrawler();};
  const s=c.settings,pct=c.total?Math.round(c.done/c.total*100):0,num=v=>(v??0).toLocaleString('he-IL');
@@ -234,6 +307,7 @@ async function renderCrawler(){
    el('label',{},src.clicks,'מוצרים שקונים לחצו עליהם (ראשונים)'),el('label',{},src.sitemap,'מפת האתר'),el('label',{},src.catalog,'מוצרים שכבר בקטלוג (רענון מחיר ומלאי)'),
    el('button',{type:'button',class:'ghost',onclick:()=>act('settings',{rateMs:Math.round(Number(rate.value)*1000),autoMerge:auto.checked,sources:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,v.checked]))})},'שמור הגדרות'),
    el('p',{class:'meta'},'שינוי קצב ומקורות חל בהפעלה הבאה של הסורק; שינוי מקורות דורש ״רענן רשימת דפים״.')),
+  scraperSection(sc,id),
   c.recentErrors?.length?el('details',{},el('summary',{},'שגיאות אחרונות'),el('ul',{},c.recentErrors.map(e=>el('li',{},`${e.url} — ${e.error}`)))):null);
  if((c.running||c.desired==='running')&&!document.querySelector('[data-pane="crawler"]').hidden)crawlTimer=setTimeout(renderCrawler,5000);
 }

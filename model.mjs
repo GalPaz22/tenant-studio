@@ -1,19 +1,29 @@
 import { GoogleGenAI } from '@google/genai';
 export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.1-flash-lite';
 export const askChatAgent=prompt=>askAgent(prompt,{model:chatModel(),reasoning:false});
-export const studioModel=()=>process.env.STUDIO_AGENT_MODEL||chatModel();
+// The studio agent makes many quick tool calls: a strong Flash. Research, planning and verification think harder: Pro.
+export const studioModel=()=>process.env.STUDIO_AGENT_MODEL||'gemini-3.8-flash';
+export const plannerModel=()=>process.env.STUDIO_PLANNER_MODEL||'gemini-3.1-pro-preview';
+export const processingModel=()=>process.env.STUDIO_PROCESSING_MODEL||'gemini-3.8-flash';
+// Research over a lot of evidence can take minutes; one retry when the provider's deadline expires.
+export const askPlanner=async prompt=>{try{return await askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}catch(e){if(!/DEADLINE_EXCEEDED|timed? ?out|504|503|UNAVAILABLE/i.test(e.message))throw e;return askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}};
+export const askProcessing=prompt=>askAgent(prompt,{model:processingModel(),reasoning:false});
 export const askStudioAgent=prompt=>askAgent(prompt,{model:studioModel(),reasoning:false});
 // The reviewer that accepts or rejects a search fix thinks before answering; a cheap judge approves false claims.
-export const judgeModel=()=>process.env.STUDIO_JUDGE_MODEL||studioModel();
+export const judgeModel=()=>process.env.STUDIO_JUDGE_MODEL||plannerModel();
 export const askJudgeAgent=prompt=>askAgent(prompt,{model:judgeModel(),reasoning:true});
-export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false}={}) {
+const minimalRejected=new Set();
+export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false,timeoutMs=reasoning?120000:45000}={}) {
  const key=process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
  if(!key)throw Error('נדרש GEMINI_API_KEY או GOOGLE_API_KEY להפעלת האייג׳נט');
- const response=await new GoogleGenAI({apiKey:key}).models.generateContent({
+ // Fast calls use the lowest thinking level a model accepts; newer models reject "minimal", so fall back to "low".
+ const ask=level=>new GoogleGenAI({apiKey:key}).models.generateContent({
   model,contents:prompt,
   config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens:reasoning?24000:12000,
-   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:reasoning?'high':(/flash/.test(model)?'minimal':'low')}:{thinkingBudget:reasoning?8192:0},httpOptions:{timeout:reasoning?120000:45000,retryOptions:{attempts:1}}}
+   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:level}:{thinkingBudget:reasoning?8192:0},httpOptions:{timeout:timeoutMs,retryOptions:{attempts:1}}}
  });
+ const level=reasoning?'high':minimalRejected.has(model)||!/flash/.test(model)?'low':'minimal';
+ let response;try{response=await ask(level);}catch(e){if(level!=='minimal'||!/thinking level/i.test(e.message))throw e;minimalRejected.add(model);response=await ask('low');}
  const raw=response.text||'';
  if(response.candidates?.[0]?.finishReason==='MAX_TOKENS'){const e=Error('פלט המודל נחתך; נדרש פרופיל קצר יותר');e.modelResponse=raw;throw e;}
  let data;try{data=parseAgentResponse(raw);if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Expected JSON object');}catch{const e=Error('המודל החזיר JSON לא תקין');e.modelResponse=raw;throw e;}

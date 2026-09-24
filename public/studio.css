@@ -941,3 +941,24 @@ input:focus, textarea:focus {
 .crawler input[type=number] { width: 80px; }
 .crawler .status-running { color: var(--ok, #2e7d32); }
 .crawler .status-blocked, .crawler .status-interrupted { color: #b3261e; }
+
+.baseline { display: flex; flex-direction: column; gap: 12px; }
+.baseline h3 { margin: 0; }
+.baseline .score { font-size: 32px; font-weight: 700; line-height: 1; }
+.baseline .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.baseline .tile { border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.baseline .tile b { display: block; font-size: 18px; }
+.baseline .tile small { color: var(--muted, #666); }
+.baseline .row { border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+.baseline .row .q { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.baseline .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.baseline .stale { color: #b3261e; }
+
+.plan { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.plan .kind { font-size: 12px; color: var(--muted, #666); direction: ltr; text-align: right; }
+.plan table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.plan td, .plan th { border-top: 1px solid var(--line); padding: 4px; vertical-align: top; text-align: right; }
+.chips-inline { display: flex; flex-wrap: wrap; gap: 4px; }
+.chips-inline span { background: rgba(0,0,0,0.05); border-radius: 10px; padding: 1px 8px; font-size: 12px; }
+
+.crawler pre { max-height: 240px; overflow: auto; font-size: 11px; background: rgba(0,0,0,0.04); padding: 8px; border-radius: 6px; }

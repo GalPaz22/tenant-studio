@@ -12,7 +12,7 @@ export async function workOnce(store,{owner,seed=seedCrawl,run=runCrawl,log=cons
  if(job.reseedRequested||!state.queue.length){
   log(id,'seeding',job.target?.url);
   const project={id,url:job.target.url,existingClient:job.target.dbName?{dbName:job.target.dbName}:null};
-  const fresh=await seed(project,{sources:settings.sources,clicks:readClickedUrls,catalogUrls:readCatalogUrls,...seedOptions});
+  const fresh=await seed(project,{sources:settings.sources,clicks:readClickedUrls,catalogUrls:readCatalogUrls,spec:job.target.spec||null,...seedOptions});
   // Pages already crawled stay; only new pages are queued.
   const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(u.split('/').pop()));
   state={...state,...fresh,products:state.products,errors:state.errors,startedAt:state.startedAt||fresh.startedAt,next:0};
@@ -22,7 +22,7 @@ export async function workOnce(store,{owner,seed=seedCrawl,run=runCrawl,log=cons
  let stop=false,exitReason=null;
  state.runStartedAt=new Date().toISOString();state.runStartNext=state.next;state.failures=0;delete state.blockedReason;
  const guarded={save:async s=>{await store.save(s);const ctl=await store.renew(id,owner);if(!ctl||ctl.desired!=='running'){stop=true;exitReason='stopped-by-studio';}if(shouldExit()){stop=true;exitReason='worker-exit';}}};
- await run(state,{store:guarded,rateMs:settings.rateMs,shouldStop:()=>stop||shouldExit(),onProgress:s=>log(id,`${s.next}/${s.queue.length}`,'products',Object.keys(s.products).length,s.status)});
+ await run(state,{store:guarded,spec:job.target?.spec||null,rateMs:settings.rateMs,shouldStop:()=>stop||shouldExit(),onProgress:s=>log(id,`${s.next}/${s.queue.length}`,'products',Object.keys(s.products).length,s.status)});
  await store.save(state);
  // A worker shutting down (Render deploy/restart) leaves the job running so the next worker resumes it.
  const finished=['done','blocked'].includes(state.status);
