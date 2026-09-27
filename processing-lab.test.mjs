@@ -38,3 +38,44 @@ test('processing that loses a query that works in production is rolled back',asy
  assert.ok(p.productCards.every(c=>!('noise' in c.specifications)),'cards restored');assert.ok(p.catalog.products.every(x=>!('noise' in (x.specifications||{}))));
  assert.equal(evaluateBaseline(p,p.revisions[0].profile).results[0].status,'kept','search works again');
 });
+import {undoPlan} from './core/processing-lab.mjs';
+import {unpackVectors} from './core/embeddings.mjs';
+const games=()=>{const p=existingProject('shop',{dbName:'shop'},[
+ {id:'g:1',name:'קוד הצבע',description:'משחק קופסה משפחתי של רמזים ומילים',url:'https://s.co/g1',stockStatus:'instock'},{id:'g:2',name:'טאבו',description:'משחק מילים לקבוצות',url:'https://s.co/g2',stockStatus:'instock'},
+ {id:'b:1',name:'שם הוורד',description:'רומן היסטורי',url:'https://s.co/b1',stockStatus:'instock'}]);
+ p.baseline=buildBaseline(p,{days:30,since:'x',queries:[{_id:'משחק חברה',searches:30,zero:30,form:'משחק חברה'},{_id:'שם הוורד',searches:20,zero:0,form:'שם הוורד'}],clicks:[{_id:{q:'שם הוורד',u:'https://s.co/b1'},n:9},{_id:{q:'משחק חברה',u:'https://s.co/g1'},n:5}],carts:[]});
+ p.baselineEval={...evaluateBaseline(p,p.revisions[0].profile),profileHash:hash(p.revisions[0].profile),indexVersion:p.searchIndex.version};return p;};
+
+test('research knows the practice, can propose any kind including ideas, and still rejects what cannot run',async()=>{
+ const p=games();let prompt='';
+ const lab=await researchProcessing(p,{planner:async x=>{prompt=x;return {summary:'s',plans:[
+  {title:'מילות קונים',kind:'enrich_products',target:'shopper_terms',instruction:'words shoppers use',expectedQueries:['משחק חברה']},
+  {title:'משחקי חברה',kind:'classify_tag',tag:'משחק חברה',definition:'A board, card or party game played by several people'},
+  {title:'וקטורים',kind:'embeddings',scope:{}},{title:'השלמת מלאי מהספק',kind:'idea',implementation:'Connect the supplier feed API'},
+  {title:'רעיון ריק',kind:'idea'},{title:'תגית בלי הגדרה',kind:'classify_tag',tag:'x'}]};}});
+ assert.match(prompt,/doc2query/);assert.match(prompt,/Dense embeddings/);
+ assert.deepEqual(lab.plans.map(x=>[x.kind,x.status]),[['enrich_products','proposed'],['classify_tag','proposed'],['embeddings','proposed'],['idea','idea']]);assert.equal(lab.rejected,2);
+});
+test('enrichment and evidence-based tagging make failing descriptive queries findable, and undo removes them',async()=>{
+ const p=games();p.processingLab={plans:[
+  {id:'e',kind:'enrich_products',target:'shopper_terms',instruction:'x',scope:{},status:'tried',title:'e'},
+  {id:'t',kind:'classify_tag',tag:'משחק חברה',definition:'board or party game',scope:{},status:'tried',title:'t'}]};
+ const enrichWorker=async prompt=>{const d=JSON.parse(prompt.slice(prompt.lastIndexOf('DATA ')+5));return {values:d.map(x=>({id:x.id,text:x.id.startsWith('g')?'משחק חברה · משחק קופסה':''}))};};
+ const r=await runPlan(p,'e',{worker:enrichWorker});assert.equal(r.updated,2);assert.deepEqual(r.delta.newlyKept,['משחק חברה']);
+ // The tagger must quote the product; an unsupported "matched" becomes unknown.
+ const tagWorker=async prompt=>{const d=JSON.parse(prompt.slice(prompt.indexOf('\nDATA ')+6,prompt.lastIndexOf('\nReturn JSON')));return {decisions:d.map(x=>x.id==='g:1'?{id:x.id,status:'matched',field:'description',quote:'משחק קופסה משפחתי'}:x.id==='g:2'?{id:x.id,status:'matched',field:'description',quote:'invented quote'}:{id:x.id,status:'not_matched',field:'description',quote:'רומן היסטורי'})};};
+ const t=await runPlan(p,'t',{worker:tagWorker});assert.equal(t.updated,1);assert.deepEqual(p.productCards.find(c=>c.id==='g:1').tags.includes('משחק חברה'),true);assert.equal(p.productCards.find(c=>c.id==='g:2').tags.includes('משחק חברה'),false);
+ undoPlan(p,'e');assert.ok(p.productCards.every(c=>!c.specifications.shopper_terms));assert.equal(p.processingLab.plans[0].status,'undone');
+ undoPlan(p,'t');assert.ok(p.productCards.every(c=>!(c.tags||[]).includes('משחק חברה')));assert.equal(p.baselineEval.results.find(r=>r.query==='משחק חברה').status,'lost');
+});
+test('embeddings are stored compactly, used by the runtime, measured with the full search and removable',async()=>{
+ const p=games();p.processingLab={plans:[{id:'v',kind:'embeddings',scope:{},status:'tried',title:'v',expectedQueries:['משחק חברה']}]};
+ const embed=async(texts)=>texts.map(t=>/משחק/.test(t)?[1,0,...new Array(254).fill(0)]:[0,1,...new Array(254).fill(0)]);
+ let searches=0;const search=q=>async()=>{searches++;return {matches:q.studioVectors?[{id:'g:1'}]:[]};};
+ const r=await runPlan(p,'v',{embed,search});
+ assert.equal(r.updated,3);assert.equal(p.studioVectors.dimensions,256);assert.equal(unpackVectors(p.studioVectors).get('g:1')[0],1);
+ assert.deepEqual(r.fullSearch.before,{found:0,total:1});assert.deepEqual(r.fullSearch.after,{found:1,total:1});
+ const again=await runPlan(p,'v',{embed,search});assert.equal(again.updated,0,'unchanged products are not embedded again');
+ const {createDraftRuntime}=await import('./runtime.mjs');assert.ok(createDraftRuntime({...p,productCardsProfileHash:hash(p.revisions[0].profile)},p.revisions[0]).search);
+ undoPlan(p,'v');assert.equal(p.studioVectors,undefined);
+});

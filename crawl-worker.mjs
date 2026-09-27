@@ -4,7 +4,7 @@
 import 'dotenv/config';
 import {readFile} from 'node:fs/promises';
 import {createCrawlDb} from './core/crawl-store.mjs';
-import {workLoop} from './core/crawl-worker.mjs';
+import {workLoop,watchdog} from './core/crawl-worker.mjs';
 const {store,close}=createCrawlDb();
 const i=process.argv.indexOf('--import-local');
 if(i>=0){
@@ -15,5 +15,6 @@ if(i>=0){
  console.log('imported',id,Object.keys(local.products).length,'pages,',local.next,'/',local.queue.length);await close();process.exit(0);
 }
 let exit=false;for(const sig of ['SIGTERM','SIGINT'])process.on(sig,()=>{exit=true;console.log('shutting down after current page…');});
-await workLoop(store,{shouldExit:()=>exit});
+const dog=watchdog({onStall:minutes=>{console.log(new Date().toISOString(),`no progress for ${minutes} minutes — exiting so a fresh worker resumes the crawl`);process.exit(1);}});
+await workLoop(store,{shouldExit:()=>exit,beat:dog.beat});dog.stop();
 await close();

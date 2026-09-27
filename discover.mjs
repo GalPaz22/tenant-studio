@@ -5,6 +5,8 @@ export function publicAddress(address) {
  const [a,b]=address.split('.').map(Number);
  return !(a===0||a===10||a===127||a>=224||a===169&&b===254||a===172&&b>=16&&b<=31||a===192&&b===168||a===100&&b>=64&&b<=127||a===198&&(b===18||b===19));
 }
+// HTML pages can be heavy (inline scripts/styles); JSON API pages keep the 3 MB default, which drives page-size fallback.
+export const PAGE_BYTES=16*1024*1024;
 export async function fetchPublic(input, redirects=0,options={}) {
  const maxBytes=options.maxBytes??3*1024*1024;if(!Number.isInteger(maxBytes)||maxBytes<1||maxBytes>256*1024*1024)throw Error('Invalid source size limit');
  const url=new URL(input);

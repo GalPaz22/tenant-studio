@@ -4,7 +4,7 @@ const books=[{id:'1',name:'הארי פוטר ואבן החכמים',description:
 const setup=()=>{const p=existingProject('books',{dbName:'books'},books);return {index:p.searchIndex,find:createIndexRetriever(p.productCards,{...p.revisions[0].profile,tenantId:p.id},p.searchIndex)};};
 const ids=r=>r.matches.map(m=>m.id);
 test('bounded distance stops early and matches full distance within the bound',()=>{assert.equal(boundedDistance('פוטר','פטור',2),2);assert.equal(boundedDistance('abcdef','uvwxyz',1),2);assert.equal(boundedDistance('potter','poter',1),1);});
-test('exact terms are unchanged and never broadened by fuzzy',()=>{const {find}=setup();const r=find('ספר');assert.deepEqual(ids(r),['1']);assert.equal(r.corrections,undefined);});
+test('exact terms are never broadened by fuzzy; the plural of the same word counts, after the exact form',()=>{const {find}=setup();const r=find('ספר');assert.deepEqual(ids(r),['1','2']);assert.equal(r.corrections,undefined);assert.deepEqual(ids(find('ספרים')),['2','1']);});
 test('a typo in one word of several is corrected per term',()=>{const {find}=setup();const r=find('הארי פוטטר');assert.deepEqual(ids(r),['1']);assert.equal(r.corrections[0].kind,'fuzzy');assert.deepEqual(r.corrections[0].to,['פוטר']);assert.deepEqual(ids(find('harry poter')),['3']);});
 test('long words allow two edits, short words none',()=>{const {find}=setup();assert.deepEqual(ids(find('fantasyy novell')),['3']);assert.equal(find('פטר').total,0);});
 test('Hebrew prefixes are stripped before fuzzy is attempted',()=>{const {find,index}=setup();const r=find('והספרים');assert.deepEqual(ids(r),['2']);assert.deepEqual(r.corrections[0],{term:'והספרים',kind:'prefix',to:['ספרים']});assert.equal(resolveTerm(index,'ספר').kind,'exact');});

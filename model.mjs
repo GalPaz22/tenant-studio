@@ -1,37 +1,91 @@
 import { GoogleGenAI } from '@google/genai';
+import {createHash} from 'node:crypto';
+import {validateHooks} from './core/tenant-hooks.mjs';
 export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.1-flash-lite';
 export const askChatAgent=prompt=>askAgent(prompt,{model:chatModel(),reasoning:false});
-// The studio agent makes many quick tool calls: a strong Flash. Research, planning and verification think harder: Pro.
+// The studio agent: gemini-3.8-flash by default (fast multi-step tool use); the reviewer and planner stay on Pro.
+// Override with STUDIO_AGENT_MODEL (e.g. gemini-3.1-pro-preview for deeper, slower turns).
 export const studioModel=()=>process.env.STUDIO_AGENT_MODEL||'gemini-3.8-flash';
 export const plannerModel=()=>process.env.STUDIO_PLANNER_MODEL||'gemini-3.1-pro-preview';
 export const processingModel=()=>process.env.STUDIO_PROCESSING_MODEL||'gemini-3.8-flash';
 // Research over a lot of evidence can take minutes; one retry when the provider's deadline expires.
 export const askPlanner=async prompt=>{try{return await askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}catch(e){if(!/DEADLINE_EXCEEDED|timed? ?out|504|503|UNAVAILABLE/i.test(e.message))throw e;return askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}};
 export const askProcessing=prompt=>askAgent(prompt,{model:processingModel(),reasoning:false});
-export const askStudioAgent=prompt=>askAgent(prompt,{model:studioModel(),reasoning:false});
+export const askStudioAgent=prompt=>askAgent(prompt,{model:studioModel(),reasoning:false,timeoutMs:180000});
 // The reviewer that accepts or rejects a search fix thinks before answering; a cheap judge approves false claims.
 export const judgeModel=()=>process.env.STUDIO_JUDGE_MODEL||plannerModel();
 export const askJudgeAgent=prompt=>askAgent(prompt,{model:judgeModel(),reasoning:true});
 const minimalRejected=new Set();
+// A prompt may start with a part that is identical for every tenant and every round (instructions, engine notes, tool
+// list), followed by CACHE_BREAK. That part is kept in an explicit Gemini context cache (billed at the cached rate) and
+// only the rest is sent each call. If a cache cannot be made, the prompt is sent whole, as before.
+export const CACHE_BREAK='\n<<<STATIC_PREFIX_END>>>\n';
+const caches=new Map(),cacheFailed=new Set(),CACHE_TTL_S=3600;
+// No tools are declared; NONE also stops a model that sees a tool list in the prompt from emitting a native call (empty
+// reply). A request that uses a cache may not set a tool config, so the cache carries it.
+const NO_TOOLS={functionCallingConfig:{mode:'NONE'}};
+async function cachedPrefix(ai,model,prefix){
+ const key=model+':v2:'+createHash('sha256').update(prefix).digest('hex');if(cacheFailed.has(key))return null;
+ const hit=caches.get(key);if(hit&&hit.expires-Date.now()>120000)return (await hit.pending)?.name||null;
+ const pending=ai.caches.create({model,config:{contents:[{role:'user',parts:[{text:prefix}]}],toolConfig:NO_TOOLS,ttl:CACHE_TTL_S+'s',displayName:'studio-agent-static'}}).catch(e=>{cacheFailed.add(key);caches.delete(key);console.error('[studio] prompt cache unavailable:',e.message.slice(0,160));return null;});
+ const entry={pending,expires:Date.now()+CACHE_TTL_S*1000};caches.set(key,entry);entry.name=(await pending)?.name||null;return entry.name;
+}
 export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false,timeoutMs=reasoning?120000:45000}={}) {
  const key=process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
  if(!key)throw Error('נדרש GEMINI_API_KEY או GOOGLE_API_KEY להפעלת האייג׳נט');
+ const ai=new GoogleGenAI({apiKey:key}),split=prompt.indexOf(CACHE_BREAK);
+ let contents=prompt.replace(CACHE_BREAK,'\n'),cachedContent=null;
+ if(split>0){cachedContent=await cachedPrefix(ai,model,prompt.slice(0,split));if(cachedContent)contents=prompt.slice(split+CACHE_BREAK.length);}
  // Fast calls use the lowest thinking level a model accepts; newer models reject "minimal", so fall back to "low".
- const ask=level=>new GoogleGenAI({apiKey:key}).models.generateContent({
-  model,contents:prompt,
-  config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens:reasoning?24000:12000,
+ const ask=level=>ai.models.generateContent({
+  model,contents,
+  config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens:reasoning?24000:12000,...(cachedContent?{cachedContent}:{toolConfig:NO_TOOLS}),
    thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:level}:{thinkingBudget:reasoning?8192:0},httpOptions:{timeout:timeoutMs,retryOptions:{attempts:1}}}
  });
- const level=reasoning?'high':minimalRejected.has(model)||!/flash/.test(model)?'low':'minimal';
- let response;try{response=await ask(level);}catch(e){if(level!=='minimal'||!/thinking level/i.test(e.message))throw e;minimalRejected.add(model);response=await ask('low');}
+ let level=reasoning?'high':minimalRejected.has(model)||!/flash/.test(model)?'low':'minimal',response;
+ // Each known rejection changes one thing and retries: a rejected cache → the whole prompt without it; a thinking level
+ // the model does not support → "low" (remembered per model). Anything else, or the same rejection twice, is thrown.
+ for(let attempt=0;;attempt++){
+  try{response=await ask(level);break;}
+  catch(e){
+   if(attempt>=3)throw e;
+   if(cachedContent&&/cach/i.test(e.message)){const k=[...caches].find(([,v])=>v.name===cachedContent)?.[0];cacheFailed.add(k);caches.delete(k);cachedContent=null;contents=prompt.replace(CACHE_BREAK,'\n');continue;}
+   if(level==='minimal'&&/thinking level/i.test(e.message)){minimalRejected.add(model);level='low';continue;}
+   throw e;
+  }
+ }
+ // An empty reply (a native function-call attempt, a thought-only turn) is asked once more here, before the agent loop
+ // pays for a whole new round; the reason is kept for the logs.
+ const reason=r=>r.candidates?.[0]?.finishReason||r.promptFeedback?.blockReason||'none';
+ // MALFORMED_FUNCTION_CALL means the model tried a native tool call (typically while writing code into an edit); the
+ // retry says so explicitly instead of repeating the identical request.
+ let emptyReason=null;if(!response.text){emptyReason=reason(response);if(emptyReason==='MALFORMED_FUNCTION_CALL')contents+='\n\nYour previous reply was an empty native function call (MALFORMED_FUNCTION_CALL). Tools are NOT callable natively here: write the single JSON object as plain text. Keep code in edits short (a few lines per plugin_patch, by line range).';response=await ask(level);}
  const raw=response.text||'';
  if(response.candidates?.[0]?.finishReason==='MAX_TOKENS'){const e=Error('פלט המודל נחתך; נדרש פרופיל קצר יותר');e.modelResponse=raw;throw e;}
- let data;try{data=parseAgentResponse(raw);if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Expected JSON object');}catch{const e=Error('המודל החזיר JSON לא תקין');e.modelResponse=raw;throw e;}
+ // A final answer written as plain Markdown instead of {"message":…} is taken as the message.
+ const prose=raw.trim()&&!/^[\[{]/.test(raw.trim())&&!/"tools"\s*:/.test(raw)?raw.trim():null;
+ let data;try{data=prose?{message:prose}:mergeReplies(parseAgentResponse(raw));if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Expected JSON object');}catch{const e=Error('המודל החזיר JSON לא תקין'+(raw?'':` (תשובה ריקה: ${emptyReason||reason(response)}${emptyReason?' ×2':''})`));e.modelResponse=raw;e.finishReason=reason(response);throw e;}
  Object.defineProperty(data,'rawResponse',{value:raw,enumerable:false});Object.defineProperty(data,'usage',{value:response.usageMetadata,enumerable:false});return data;
 }
+// Models sometimes return a list of replies ([{note,tools},{tools}]): one reply with all the tools, or the final message.
+export function mergeReplies(data){
+ if(!Array.isArray(data)||!data.length||!data.every(x=>x&&typeof x==='object'&&!Array.isArray(x)))return data;
+ if(data.length===1)return data[0];
+ const tools=data.flatMap(x=>Array.isArray(x.tools)?x.tools:[]);
+ if(tools.length)return {note:data.find(x=>typeof x.note==='string')?.note,tools};
+ return data.find(x=>typeof x.message==='string')||data[0];
+}
+// A key that lost its opening quote ({name":"search"} → {"name":"search"}) is the one slip models make often enough to
+// repair locally instead of paying for another call; anything else must be valid JSON.
+// Repairs two slips seen from agent models: a key missing its opening quote (tool:"x"), and a tool's arguments sent
+// as a bare object after its name ({"name":"plugin_files",{}} / {"name":"x",{"path":"a"}}), which are spread inline.
+export const repairJson=raw=>String(raw).replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)"\s*:/g,'$1"$2":')
+ .replace(/("(?:name|tool)"\s*:\s*"[^"]*")\s*,\s*\{([^{}]*)\}/g,(_,name,body)=>body.trim()?name+','+body:name);
 export function parseAgentResponse(raw){
- let data=JSON.parse(raw);
+ let data;try{data=JSON.parse(raw);}catch(e){const fixed=repairJson(raw);if(fixed===raw)throw e;data=JSON.parse(fixed);}
  if(Array.isArray(data)&&data.length===1&&data[0]&&typeof data[0]==='object'&&!Array.isArray(data[0]))data=data[0];
+ // A list of several replies is merged by mergeReplies; anything else must be one object.
+ if(Array.isArray(data)&&data.length>1&&data.every(x=>x&&typeof x==='object'&&!Array.isArray(x))&&data.some(x=>Array.isArray(x.tools)||typeof x.message==='string'))return data;
  if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Expected one JSON object');
  return data;
 }
@@ -68,6 +122,10 @@ export function validateProfile(profile) {
  for(const r of profile.badgeRules)if(!['categories','tags'].includes(r.field)||typeof r.value!=='string'||typeof r.text!=='string'||r.text.length>100||!Number.isInteger(r.order))throw Error('Invalid badge rule');
  const p=profile.pipeline;
  if(!p||!Number.isInteger(p.maxCandidates)||p.maxCandidates<10||p.maxCandidates>100||typeof p.lightweightRouter!=='boolean')throw Error('Invalid pipeline');
+ validateHooks(profile.hooks,profile.hookData);
+ if(p.outOfStock!==undefined&&!['hide','last','show'].includes(p.outOfStock))throw Error('Invalid pipeline');
+ if(p.pageSize!==undefined&&(!Number.isInteger(p.pageSize)||p.pageSize<1||p.pageSize>50))throw Error('Invalid pipeline');
+ if(p.expansion!==undefined&&!['always','sparse','off'].includes(p.expansion)||p.expandBelow!==undefined&&(!Number.isInteger(p.expandBelow)||p.expandBelow<1||p.expandBelow>200))throw Error('Invalid pipeline');
  if(profile.indexFields!==undefined && (!strings(profile.indexFields)||profile.indexFields.some(f=>!['name','id','categories','tags','colors','finishes','productType','price','stockStatus','hidden'].includes(f))))throw Error('Invalid index fields');
  if(profile.scopedAliases!==undefined){
   if(!Array.isArray(profile.scopedAliases)||profile.scopedAliases.length>100)throw Error('Too many scoped aliases');

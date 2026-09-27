@@ -29,14 +29,16 @@ export function crawlStoreOver({crawls,products},{now=()=>new Date()}={}){
   },
   async control(id,fields){const set={};for(const k of CONTROL)if(fields[k]!==undefined)set[k]=fields[k];await crawls.updateOne({_id:id},{$set:{...set,controlUpdatedAt:now().toISOString()},$setOnInsert:{projectId:id,next:0,queue:[],status:'none'}},{upsert:true});},
   // Takes one tenant that should be running and has no live lease (or already belongs to this worker).
-  async claim(owner){const t=now();return crawls.findOneAndUpdate({desired:'running',$or:[{lease:null},{'lease.until':{$lt:t.toISOString()}},{'lease.owner':owner}]},{$set:{lease:{owner,until:new Date(t.getTime()+LEASE_MS).toISOString(),host:owner.split('#')[0]}}},{returnDocument:'after'});},
+  // With projectId, only that tenant (the studio running one crawl in-process).
+  async claim(owner,projectId){const t=now();return crawls.findOneAndUpdate({...(projectId&&{_id:projectId}),desired:'running',$or:[{lease:null},{'lease.until':{$lt:t.toISOString()}},{'lease.owner':owner}]},{$set:{lease:{owner,until:new Date(t.getTime()+LEASE_MS).toISOString(),host:owner.split('#')[0]}}},{returnDocument:'after'});},
   async renew(id,owner){const t=now();return crawls.findOneAndUpdate({_id:id,'lease.owner':owner},{$set:{'lease.until':new Date(t.getTime()+LEASE_MS).toISOString()}},{returnDocument:'after',projection:{queue:0}});},
   async release(id,owner,{desired}={}){await crawls.updateOne({_id:id,'lease.owner':owner},{$set:{lease:null,...(desired&&{desired})}});},
  };
 }
 export function createCrawlDb({uri=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI,dbName=process.env.STUDIO_CRAWL_DB||'semantix_studio'}={}){
  if(!uri)throw Error('חסר חיבור ל־MongoDB עבור הסורק');
- const client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});let ready;
+ // A socket that died under the worker (laptop sleep, network change) must fail the operation, not hang it forever.
+ const client=new MongoClient(uri,{serverSelectionTimeoutMS:10000,socketTimeoutMS:120000,connectTimeoutMS:15000});let ready;
  const connect=()=>ready??=client.connect().then(async()=>{const db=client.db(dbName);await db.collection('crawl_products').createIndex({projectId:1}).catch(()=>{});return {crawls:db.collection('crawls'),products:db.collection('crawl_products')};});
  // Lazily connected store: same interface as crawlStoreOver.
  let store;const get=async()=>store??=crawlStoreOver(await connect());

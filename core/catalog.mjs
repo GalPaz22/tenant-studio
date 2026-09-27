@@ -1,9 +1,13 @@
 import {load} from 'cheerio';
 import {createHash} from 'node:crypto';
-import {fetchPublic} from '../discover.mjs';
+import {fetchPublic,PAGE_BYTES} from '../discover.mjs';
 import {authorizedPage} from './connectors.mjs';
+import {validateSpec,extractWithSpec,productKey,rx} from './scraper-builder.mjs';
+import {robotsRules,robotsAllows} from './site-crawler.mjs';
+import {pageLinks} from './onboard.mjs';
 
-export const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+import {hash} from './hash.mjs';
+export {hash};
 export function clean(value) {
   const $=load(String(value??''));$('script,style,noscript').remove();
   return $.root().text().replace(/\s+/g,' ').trim();
@@ -59,8 +63,16 @@ export function normalizeRecord(raw,platform,origin,sourceUrl,at=new Date().toIS
 }
 export function jsonProducts(html) {
   const $=load(html),products=[];
-  const walk=n=>{if(!n||typeof n!=='object')return;if(n['@type']==='Product'||Array.isArray(n['@type'])&&n['@type'].includes('Product'))products.push(n);for(const v of Object.values(n))if(v&&typeof v==='object'){if(Array.isArray(v))v.forEach(walk);else walk(v)}};
+  // Product types, plus any named item that is sold (e.g. a Book with offers).
+  const sold=n=>[n['@type']].flat().some(t=>/^(Product|ProductGroup|IndividualProduct|ProductModel)$/.test(t))||n.name&&n.offers&&typeof n.offers==='object';
+  const walk=n=>{if(!n||typeof n!=='object')return;if(sold(n))products.push(n);for(const v of Object.values(n))if(v&&typeof v==='object'){if(Array.isArray(v))v.forEach(walk);else walk(v)}};
   $('script[type="application/ld+json"]').each((_,el)=>{try{walk(JSON.parse($(el).html()))}catch{}});return products;
+}
+// A spec extraction as a custom-source record (store-specific fields become specifications).
+export function specRecord(r){
+  const specifications={...r.extra};for(const k of ['author','publisher','isbn'])if(r[k])specifications[k]=String(r[k]);
+  return {id:r.key||r.sku,sku:r.sku||'',name:r.name,url:r.url,image:r.image,description:r.description,price:r.price,currency:r.currency,stockStatus:r.stockStatus,
+    categories:r.extra?.category?[r.extra.category]:[],brand:r.extra?.brand||'',specifications};
 }
 export function parseCsv(text) {
   const rows=[];let row=[],cell='',quoted=false;
@@ -76,6 +88,15 @@ export async function collectCatalog(project,options,state,{fetchSource=fetchPub
   const origin=new URL(project.url).origin;
   state.page??=1;state.pageSize??=25;state.pages??=[];state.errors??=[];state.urls??=[];
   const mode=options.sourceType;
+  // Page-based sources read the store's own pages: a dedicated spec (when the build asks for it) or JSON-LD.
+  const spec=options.scraper&&project.scraper?.spec?validateSpec(project.scraper.spec):null;
+  const pause=()=>options.politeMs?new Promise(r=>setTimeout(r,options.politeMs)):null;
+  const pageRows=(html,url)=>{
+    if(spec){if(!productKey(url,spec))return [];const r=extractWithSpec(html,url,spec);return r?[specRecord(r)]:[];}
+    const found=jsonProducts(html);
+    // Listing pages carry many Product objects; only the page's own product is taken (others are read on their pages).
+    return (found.length===1?found:found.filter(r=>{try{return new URL(r.url,url).href===url}catch{return false}})).map(r=>({...r,id:r.id??r.productID??r.sku??r['@id']??new URL(url).pathname}));
+  };
   if(mode==='authorized'){
     while(!state.complete){await control();const result=await authorizedPage(project,state,fetchSource);const pageHash=hash(result.rows.map(r=>r.id));if(result.rows.length&&state.lastPageHash===pageHash)throw Error('המחבר המורשה החזיר עמוד חוזר');
       const key='catalog-authorized-'+state.page;await asset(key,result);state.pages.push(key);state.count=(state.count||0)+result.rows.length;state.lastPageHash=pageHash;state.apiCursor=result.nextCursor;state.complete=result.complete;state.page++;await checkpoint();await report(`נקראו ${state.count} מוצרים מהמחבר המורשה`);}
@@ -92,20 +113,41 @@ export async function collectCatalog(project,options,state,{fetchSource=fetchPub
   }
   if(mode==='sitemap') {
     state.sitemaps??=[options.sitemapUrl];state.seenSitemaps??=[];
-    while(state.sitemaps.length){await control();const url=state.sitemaps[0];const xml=await fetchSource(url),$=load(xml,{xmlMode:true});
-      const nested=$('sitemap > loc').toArray().map(n=>$(n).text().trim());
-      const urls=$('url > loc').toArray().map(n=>$(n).text().trim()).filter(u=>{try{return new URL(u).origin===origin}catch{return false}});
+    while(state.sitemaps.length){await control();const url=state.sitemaps[0];const xml=await fetchSource(url,{maxBytes:64*1024*1024}),$=load(xml,{xmlMode:true});
+      let nested=$('sitemap > loc').toArray().map(n=>$(n).text().trim());
+      // A product filter (e.g. "product") keeps only product sitemaps when the index has any.
+      if(options.sitemapFilter&&nested.some(u=>rx(options.sitemapFilter).test(u)))nested=nested.filter(u=>rx(options.sitemapFilter).test(u));
+      const urls=$('url > loc').toArray().map(n=>$(n).text().trim()).filter(u=>{try{return new URL(u).origin===origin&&(!spec||productKey(u,spec))}catch{return false}});
       state.urls=[...new Set([...state.urls,...urls])];state.seenSitemaps.push(url);state.sitemaps.shift();
       for(const child of nested)if(new URL(child).origin===origin&&!state.seenSitemaps.includes(child)&&!state.sitemaps.includes(child))state.sitemaps.push(child);
       await checkpoint();await report(`התגלו ${state.urls.length} עמודים במפת האתר`);
     }
     state.urlCursor??=0;
     while(state.urlCursor<state.urls.length){await control();const url=state.urls[state.urlCursor];
-      try{const html=await fetchSource(url);const rows=jsonProducts(html);if(rows.length){const key='catalog-url-'+state.urlCursor;await asset(key,{rows,platform:'custom',sourceUrl:url});state.pages.push(key);state.count=(state.count||0)+rows.length;}}
+      try{const html=await fetchSource(url,{maxBytes:PAGE_BYTES});const rows=pageRows(html,url);if(rows.length){const key='catalog-url-'+state.urlCursor;await asset(key,{rows,platform:'custom',sourceUrl:url});state.pages.push(key);state.count=(state.count||0)+rows.length;}}
       catch(e){if(e.status)throw e;state.errors.push({url,error:e.message});}
-      state.urlCursor++;await checkpoint();await report(`נקראו ${state.urlCursor} מתוך ${state.urls.length} עמודים`);
+      state.urlCursor++;await checkpoint();await report(`נקראו ${state.urlCursor} מתוך ${state.urls.length} עמודים`);await pause();
     }
     state.complete=state.errors.length===0;return {...state,scope:'sitemap-public-products',coverage:'source-only'};
+  }
+  if(mode==='crawl') {
+    // Follows the store's own links from the homepage (robots.txt obeyed, bounded frontier); product pages are
+    // recognized by the dedicated spec's URL rule, or by a single Product JSON-LD object.
+    state.frontier??=[project.url];state.cursor??=0;state.productIds??=[];
+    if(!state.robots){state.robots=robotsRules(await fetchSource(origin+'/robots.txt').catch(e=>{if(e.status)throw e;return ''}));await checkpoint();}
+    const seen=new Set(state.frontier),ids=new Set(state.productIds),maxPages=options.maxPages||20000;
+    while(state.cursor<state.frontier.length&&state.cursor<maxPages){await control();const url=state.frontier[state.cursor];
+      try{const html=await fetchSource(url,{maxBytes:PAGE_BYTES});
+        const rows=pageRows(html,url).filter(r=>{const id=String(r.id);if(ids.has(id))return false;ids.add(id);state.productIds.push(id);return true;});
+        if(rows.length){const key='catalog-crawl-'+state.cursor;await asset(key,{rows,platform:'custom',sourceUrl:url});state.pages.push(key);state.count=(state.count||0)+rows.length;}
+        for(const link of pageLinks(html,url,origin))if(!seen.has(link)&&state.frontier.length<100000&&robotsAllows(state.robots,link)){seen.add(link);state.frontier.push(link);}
+      }catch(e){if(e.status)throw e;if(state.errors.length<200)state.errors.push({url,error:e.message});}
+      state.cursor++;if(state.cursor%10===0||state.cursor>=state.frontier.length)await checkpoint();
+      await report(`נסרקו ${state.cursor} דפים מתוך ${state.frontier.length} שהתגלו · ${state.count||0} מוצרים`);await pause();
+    }
+    // Unreachable links are normal on a live site; only a frontier cut short by the page limit is incomplete.
+    state.complete=state.cursor>=state.frontier.length;await checkpoint();
+    return {...state,frontier:undefined,productIds:undefined,pagesDiscovered:state.frontier.length,scope:'crawled-public-products',coverage:'source-only'};
   }
   if(!['woocommerce','shopify'].includes(project.platform))throw Error('לסריקה מלאה של חנות זו יש לחבר פיד או sitemap');
   while(!state.complete) {

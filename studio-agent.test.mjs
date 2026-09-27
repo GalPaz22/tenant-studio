@@ -19,7 +19,7 @@ test('agent investigates, fixes a typo, verifies with the working rules and save
  assert.equal(next.revisions.length,2);assert.equal(next.revisions[1].profile.queryAliases['מאר שלו'],'מאיר שלו');assert.deepEqual(next.revisions[1].changes,['תיקון כתיב ״מאר שלו״ ← ״מאיר שלו״']);
  assert.equal(p.revisions.length,1,'input project is not mutated');
  const reply=next.messages.at(-1);assert.equal(reply.role,'assistant');assert.equal(reply.version,2);assert.equal(reply.steps.length,4);assert.equal(reply.verification.satisfied,true);
- assert.ok(model.prompts[0].includes('ONE merchant: "books"'));assert.ok(model.prompts[1].includes('"tool":"search"'));
+ assert.ok(model.prompts[0].includes('Merchant: "books"'));assert.ok(model.prompts[1].includes('"tool":"search"'));
 });
 
 test('inspect_query shows why a combination is empty and analyze paints one customer picture',async()=>{
@@ -120,8 +120,8 @@ test('after the verification rounds run out the operator is told the fix still f
  const model=async()=>i++%2===0?{tools:[{name:'add_spelling',from:'יומנן'+i,to:'יומן'}]}:{message:'תוקן',verify:['יומן']};
  const judge=async()=>({queries:[{query:'יומן',returned:[{id:'1',verdict:'unwanted'}],missing:[],note:'מוחזרים רומנים'}],summary:'לא תקין'});
  const next=await studioAgent(p,'החיפוש ״יומן״ לא טוב',{model,judge,services:{createSearch:lexical}});
- const reply=next.messages.at(-1);assert.equal(reply.verification.satisfied,false);assert.equal(reply.verification.rounds,3);assert.match(reply.text,/⚠️ האימות האוטומטי לא עבר אחרי 3 סבבי תיקון/);assert.match(reply.text,/מוחזרים רומנים/);
- assert.equal(next.revisions.length,1,'an unverified fix is not saved');assert.match(reply.text,/השינויים לא נשמרו/);assert.ok(reply.discarded.length>=3);
+ const reply=next.messages.at(-1);assert.equal(reply.verification.satisfied,false);assert.equal(reply.verification.rounds,3);assert.match(reply.text,/⚠️ לא נשמר שום שינוי — האימות האוטומטי נכשל אחרי 3 סבבי תיקון/);assert.match(reply.text,/מוחזרים רומנים/);
+ assert.equal(next.revisions.length,1,'an unverified fix is not saved');assert.match(reply.text,/מה האייג׳נט ניסה \(לא אומת ולא נשמר\)/);assert.ok(reply.discarded.length>=3);
 });
 test('a reviewer outage does not block saving and is reported',async()=>{
  const p=books();const model=scripted({tools:[{name:'add_spelling',from:'מאר שלו',to:'מאיר שלו'}]},{message:'תוקן'});
@@ -132,7 +132,7 @@ test('answering again without any change after a failed verification is sent bac
  const p=diaries();let judged=0;const prompts=[];
  const model=async prompt=>{prompts.push(prompt);return prompts.length===1?{tools:[{name:'add_spelling',from:'יומנן',to:'יומן'}]}:{message:'תוקן',verify:['יומן']};};
  const next=await studioAgent(p,'״יומן״ מחזיר ספרים',{model,judge:async()=>{judged++;return {queries:[{query:'יומן',returned:[{id:'2',verdict:'unwanted'}],missing:[]}],summary:'לא'};},services:{createSearch:lexical}});
- assert.equal(judged,1);assert.match(prompts.at(-1),/nothing changed since the failed verification/);assert.match(next.messages.at(-1).text,/⚠️ האימות האוטומטי לא עבר/);
+ assert.equal(judged,1);assert.match(prompts.at(-1),/nothing changed since the failed verification/);assert.match(next.messages.at(-1).text,/⚠️ לא נשמר שום שינוי — האימות האוטומטי נכשל/);
 });
 test('reviewer verdicts are grounded: invented ids cannot fail a good fix, and named unwanted products reach the agent',async()=>{
  const p=diaries(),profile=structuredClone(p.revisions[0].profile);profile.scopedAliases=[{id:'a',term:'יומן',mode:'only',productIds:['3','4']}];p.revisions.push({number:2,profile});
@@ -158,4 +158,59 @@ test('shopper_clicks reports clicked products that the catalog lacks',async()=>{
  const fake=(rows)=>async(_,fn)=>fn({collection:name=>({find:()=>({sort:()=>({limit:()=>({toArray:async()=>name==='product_clicks'?rows:[]})})})})});
  const r=await dbShopperClicks(p,{query:'יומן'},fake([{product_name:'יומן הקריאה שלי',product_url:'https://x/4'},{product_name:'נעלם',product_url:'https://x/digital/999'},{product_name:'נעלם',product_url:'https://x/999'}]));
  assert.equal(r.clicks,3);assert.deepEqual(r.products.map(x=>[x.title,x.clicks,x.inCatalog]),[['נעלם',2,false],['יומן הקריאה שלי',1,true]]);assert.equal(r.missingFromCatalog,1);
+});
+test('singular tool replies are understood and repeated protocol breaks are retried',async()=>{
+ const p=books();const replies=[null,{tool:'search',args:{query:'מאיר שלו'}},'garbage',{name:'find_products',args:{contains:'מאיר'}},{message:'נמצאו'}];let i=0;const notes=[];
+ const next=await studioAgent(p,'בדוק מאיר שלו',{model:async()=>{const r=replies[i++];if(r==='garbage')throw Error('המודל החזיר JSON לא תקין');return r;},onEvent:async e=>{if(e.type==='note')notes.push(e.text);},services:{createSearch:lexical}});
+ const steps=next.messages.at(-1).steps.map(s=>s.name);assert.deepEqual(steps,['search','find_products']);assert.equal(next.messages.at(-1).text,'נמצאו');assert.ok(notes.filter(n=>/מנסה שוב/.test(n)).length>=2);
+});
+test('tags or categories lists select by any label',()=>{
+ const p=existingProject('shop',{dbName:'shop'},[{id:'1',name:'קוד הצבע',tags:['משחקי קופסא'],stockStatus:'instock'},{id:'2',name:'ספר',tags:['ספרים בעברית'],stockStatus:'instock'},{id:'3',name:'טאקי',tags:['משחקי קלפים'],stockStatus:'instock'}]);
+ const r=tools.find_products.run({p,profile:p.revisions[0].profile},{tags:['משחקי קופסא','משחקי קלפים']});assert.deepEqual(r.products.map(x=>x.id).sort(),['1','3']);
+});
+
+test('cost: the static prompt prefix is identical for every tenant, and old tool results are shortened',async()=>{
+ const {CACHE_BREAK}=await import('./model.mjs');const {compactHistory}=await import('./core/studio-agent.mjs');
+ const prefixOf=async p=>{let seen;await studioAgent(p,'שלום',{model:async q=>{seen=q;return {message:'x'};},services:{createSearch:lexical}}).catch(()=>{});return seen.slice(0,seen.indexOf(CACHE_BREAK));};
+ const other=books();other.name='אחר';other.id='other-id';
+ const [a,b]=[await prefixOf(books()),await prefixOf(other)];assert.ok(a.length>10000);assert.equal(a,b,'shared by all tenants, so one cache serves them');assert.ok(!a.includes('Merchant: "books"')&&!a.includes('MERCHANT {'));
+ const big='x'.repeat(2000),h=[{tool:'search',args:{query:'a'},round:0,result:big},{tool:'verify',result:{v:1}},{tool:'state',result:{s:1}},{tool:'search',args:{query:'b'},round:3,result:big},{tool:'verify',result:{v:2}},{tool:'state',result:{s:2}}];
+ const c=compactHistory(h,4);
+ assert.match(c[0].result,/older result shortened/);assert.equal(c[0].args.query,'a');assert.equal(c.find(x=>x.args?.query==='b').result,big,'recent results stay whole');
+ assert.deepEqual(c.filter(x=>x.tool==='verify').map(x=>x.result.v),[2]);assert.deepEqual(c.filter(x=>x.tool==='state').map(x=>x.result.s),[2]);
+});
+
+test('shopper activity joins searches, clicks, carts and zero results over a window, and flags a search log gap',async()=>{
+ const {summarizeActivity}=await import('./core/shopper-activity.mjs');const d=s=>new Date('2026-09-'+s+'T10:00:00Z');
+ const r=summarizeActivity({queries:[{query:'Top',timestamp:d(18)}],
+  clicks:[...['a','b','c'].map(s=>({search_query:'fixer',session_id:s,timestamp:d(20)})),{search_query:'top',session_id:'a',timestamp:d(21)},{search_query:'fixer',session_id:'a',timestamp:d(22)}],
+  carts:[{search_query:'אלכוהול',session_id:'z',timestamp:d(22)}],zero:[{query:'בילדר גל',hits:8,recovered_count:12},{query:'x',hits:1}]},{from:'f',to:'t'});
+ assert.equal(r.top[0].query,'fixer');assert.equal(r.top[0].clickSessions,3);assert.equal(r.top[0].clicks,4);
+ assert.deepEqual(r.top.find(t=>t.query==='top'),{query:'top',searches:1,clickSessions:1,clicks:1,cartSessions:0,carts:0});
+ assert.deepEqual(r.loggingGap.searchesNotLoggedOn,['2026-09-20','2026-09-21','2026-09-22']);assert.equal(r.zeroResults[0].query,'בילדר גל');
+ const {tools}=await import('./core/studio-agent.mjs');await assert.rejects(tools.shopper_activity.run({p:{},services:{}},{days:400}),/days/);
+ assert.equal((await tools.shopper_activity.run({p:{},services:{activity:async(_p,o)=>({...r,o})}},{days:3})).o.days,3);
+});
+
+test('every turn starts with the whole picture; live data is read once and reused for 6 hours; a failure only leaves it out',async()=>{
+ let reads=0;const services={createSearch:lexical,dashboardUser:async()=>{reads++;return {name:'ביוטיקס שופ',storeContext:'ציוד לציפורניים',showsOutOfStock:true,productionModule:{module:'beautics',enabled:true,percent:10}};},
+  activity:async()=>({window:{from:'a',to:'b'},totals:{searches:2,clicks:718,carts:784,zeroResultQueries:5},loggingGap:{searchesNotLoggedOn:['2026-09-20','2026-09-21']},top:[{query:'טופ',searches:0,clickSessions:14,cartSessions:13}],zeroResults:[{query:'בילדר גל',hits:8}]})};
+ const seen=[];const model=async q=>{seen.push(q);return {message:'x'};};
+ const p=books();p.messages.push({role:'user',text:'תקדם ירקות'},{role:'assistant',text:'בוצע'});
+ const next=await studioAgent(p,'מה הכי חשוב לשפר?',{model,services});
+ const w=JSON.parse(seen[0].split('WORKSPACE (the whole picture: production settings, shoppers this week, current setup, recent versions, earlier requests) ')[1].split('\n')[0]);
+ assert.equal(w.dashboardUser.productionModule.percent,10);assert.equal(w.shoppersThisWeek.loggingGap.days,2);assert.match(w.shoppersThisWeek.top[0],/טופ \(0 חיפושים, 14 הקליקו, 13 לסל\)/);
+ assert.deepEqual(w.earlierRequests,['תקדם ירקות']);assert.equal(w.store.products,3);
+ await studioAgent(next,'ועוד משהו',{model,services});assert.equal(reads,1,'cached on the project');
+ const broken=await studioAgent(books(),'שלום',{model,services:{createSearch:lexical,dashboardUser:async()=>{throw Error('db down')},activity:async()=>{throw Error('db down')}}});
+ assert.equal(broken.messages.at(-1).text,'x','a failed live read never blocks the turn');
+});
+
+test('customer conversion questions call fresh tenant analytics without changing search rules',async()=>{
+ let calls=0,reads=0;const p=books(),before=p.revisions.length;
+ const {summarizeCustomer,analyticsOptions}=await import('./core/customer-analytics.mjs');
+ const report=summarizeCustomer({},analyticsOptions({days:7}));
+ const model=async prompt=>{assert.ok(prompt.includes('customer_analytics'));return calls++===0?{tools:[{name:'customer_analytics',days:7,sort:'purchases'}]}:{message:'אין בטווח נתוני רכישה מאומתים; אי אפשר להסיק שאין מכירות.'};};
+ const next=await studioAgent(p,'כמה רכישות היו השבוע?',{model,services:{createSearch:lexical,customerAnalytics:async(project,args)=>{reads++;assert.equal(project.id,p.id);assert.equal(args.days,7);return report;},dashboardUser:async()=>null,activity:async()=>({error:'unavailable'})}});
+ assert.equal(reads,1);assert.equal(next.revisions.length,before);
 });

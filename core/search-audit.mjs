@@ -62,11 +62,13 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
  // Measured against production (lost queries) need no reviewer to be a problem.
  if(fromBaseline)for(const m of fromBaseline.measured){results.push(m);const id=randomUUID();await onEvent({type:'tool',id,name:'audit_query',args:{query:m.query}});await onEvent({type:'tool_done',id,name:'audit_query',ok:false,text:`״${m.query}״ (${m.searches} חיפושים) — עובד בחיפוש הקיים, אצלנו חסרים ${m.missingTargets.length} מוצרים`,search:{query:m.query}});}
  const problems=results.filter(r=>r.status==='problem').sort((a,b)=>(b.searches||0)-(a.searches||0));
+ // A stop ends fixing; fixes already verified and saved are kept.
+ let stopped=null;
  if(fix)for(const r of problems.slice(0,fixLimit)){
   const id=randomUUID();await onEvent({type:'tool',id,name:'audit_fix',args:{query:r.query}});
   await onEvent({type:'note',text:`מתקן את ״${r.query}״`});
   let next=null,error=null;
-  try{next=await studioAgent(p,fixRequest(r,r),{model,judge,services,verifyQueries:[r.query],onEvent:async e=>{if(e.type==='note')await onEvent(e);}});}catch(e){error=e.message;}
+  try{next=await studioAgent(p,fixRequest(r,r),{model,judge,services,verifyQueries:[r.query],onEvent:async e=>{if(e.type==='note')await onEvent(e);}});}catch(e){if(e?.stopped){stopped=e;break;}error=e.message;}
   const reply=next?.messages.at(-1);let verified=reply?.verification?.satisfied===true;
   // A query lost against production is fixed only when the products shoppers chose come back.
   if(verified&&r.targets?.length){const e=evaluateBaseline(next,next.revisions.at(-1).profile,next.baseline,{only:new Set([r.query])});const status=e?.results[0]?.status;if(!['kept','partial'].includes(status)){verified=false;error=null;r.baselineAfter=status;}}
@@ -77,13 +79,14 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
  }
  // A later fix may break an earlier one: recheck everything that was fixed against the final rules.
  const fixed=results.filter(r=>r.fix?.status==='fixed');
- if(fixed.length>1){const final=searchContext(p,services);for(const r of fixed){const v=await judgeChecks(await collectChecks(final,[r.query]),shopperRequest(r),[],judge);if(!v.error&&!v.satisfied){r.fix.status='regressed';r.fix.message=v.queries[0].problems;}}}
+ if(fixed.length>1&&!stopped){const final=searchContext(p,services);for(const r of fixed){const v=await judgeChecks(await collectChecks(final,[r.query]),shopperRequest(r),[],judge);if(!v.error&&!v.satisfied){r.fix.status='regressed';r.fix.message=v.queries[0].problems;}}}
  const count=s=>results.filter(r=>r.status===s).length,fixCount=s=>results.filter(r=>r.fix?.status===s).length;
  const gaps=results.filter(r=>r.status==='data-gap');
  const lines=[`**נבדקו ${results.length} חיפושים אמיתיים:** ${count('ok')} תקינים, ${problems.length} עם בעיה בחיפוש${gaps.length?`, ${gaps.length} עם פער בקטלוג`:''}${count('unreviewed')?`, ${count('unreviewed')} לא נבדקו`:''}.`];
  if(fix&&problems.length)lines.push(`**תיקון אוטומטי:** ${fixCount('fixed')} תוקנו ואומתו, ${fixCount('not-verified')+fixCount('failed')} לא אומתו ולא נשמרו${fixCount('regressed')?`, ${fixCount('regressed')} נפגעו מתיקון מאוחר יותר`:''}${problems.length>fixLimit?`, ${problems.length-fixLimit} ממתינים לסבב הבא`:''}.`);
  for(const r of problems)lines.push(`* ״${r.query}״ (${r.searches} חיפושים) — ${r.fix?{fixed:'✅ תוקן',regressed:'⚠️ נפגע מתיקון אחר','not-verified':'❌ לא אומת',failed:'❌ נכשל'}[r.fix.status]+': ':''}${r.fix?.status==='fixed'?r.fix.changes.join(', '):r.problems}`);
  if(gaps.length)lines.push('**פערים בקטלוג (לא ניתנים לתיקון בכללי חיפוש — יש להשלים את פיד המוצרים או המלאי):**',...gaps.map(r=>`* ״${r.query}״ (${r.searches} חיפושים) — ${r.problems}`));
+ if(stopped)lines.push('**נעצר לבקשתך** — חיפושים שעוד לא טופלו לא תוקנו.');
  if(fix&&fixCount('fixed'))lines.push('החיפושים שתוקנו נשמרו כדוגמאות לבדיקה קבועה שממתינות לאישורך.');
  const message=lines.join('\n'),at=new Date().toISOString();
  p.audit={at,fix,analyticsWindow:{from:analytics.from,to:analytics.to,searches:analytics.sampledSearches,clickTracking:analytics.clickTracking},results:results.map(({before,...r})=>r)};

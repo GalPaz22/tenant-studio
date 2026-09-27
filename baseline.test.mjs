@@ -45,3 +45,19 @@ test('baseline-driven audit fixes a lost query only when the chosen products com
  const kept=await auditSearches(withBaseline(),{model:wrong,judge,fix:true,source:'baseline',services:{createSearch:lexical,database:{clicks:async()=>({clicks:0,products:[]})}}});
  assert.equal(kept.audit.results.find(r=>r.query==='alias').fix.status,'not-verified');assert.equal(kept.revisions.length,1);
 });
+test('a data change is measured, not blamed on the rules; a product that went out of stock is a gap, not a loss',async()=>{
+ const p=withBaseline();
+ // The crawl finds that the carted box set is out of stock and adds another Harry Potter title.
+ const crawlStore={read:async()=>({products:{'102':{sku:'102',name:'הארי פוטר מארז',stockStatus:'outofstock',crawledAt:'t'},'103':{sku:'103',name:'הארי פוטר ספר חדש',url:'https://s.co/103',stockStatus:'instock',crawledAt:'t'}}}),meta:async()=>null};
+ const prompts=[];const model=async prompt=>{prompts.push(prompt);return prompts.length===1?{tools:[{name:'merge_crawl'},{name:'add_spelling',from:'הרי פוטר',to:'הארי פוטר'}]}:{message:'מוזג ותוקן'};};
+ const next=await studioAgent(p,'מזג ותקן',{model,services:{createSearch:lexical,crawls:crawlStore}});
+ assert.equal(next.revisions.length,2,'the rule change is saved');assert.ok(!prompts.some(x=>/drops products/.test(x)));
+ const e=evaluateBaseline(next,next.revisions.at(-1).profile);const hp=e.results.find(r=>r.query==='הארי פוטר');assert.equal(hp.status,'kept');assert.equal(hp.unavailableNow,1);
+});
+test('popularity from production puts what shoppers chose first among equal matches',async()=>{
+ const {applyPopularity}=await import('./core/baseline.mjs');const p=shop();
+ const r0=createIndexRetriever(p.productCards,{...p.revisions[0].profile,tenantId:p.id},p.searchIndex)('הארי פוטר').matches.map(m=>m.id);assert.deepEqual(r0,['s:101','s:102']);
+ applyPopularity(p,{clicks:[{_id:{q:'x',u:'https://s.co/102'},n:5}],carts:[]});
+ const r1=createIndexRetriever(p.productCards,{...p.revisions[0].profile,tenantId:p.id},p.searchIndex)('הארי פוטר').matches.map(m=>m.id);assert.deepEqual(r1,['s:102','s:101']);
+ assert.equal(p.catalog.products.find(x=>x.id==='s:102').popularity,5,'kept on raw products so a rebuild does not lose it');
+});

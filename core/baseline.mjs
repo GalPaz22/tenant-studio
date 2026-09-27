@@ -1,4 +1,5 @@
 import {MongoClient} from 'mongodb';
+import {applyRanking} from './ranking.mjs';
 import {normalize} from './core.mjs';
 import {createIndexRetriever,buildSearchIndex} from './search-index.mjs';
 
@@ -22,6 +23,16 @@ export async function readProductionSignals(p,{days=30,uri=process.env.STUDIO_DA
  }finally{await c.close();}
 }
 
+// Popularity = how often shoppers of the current search chose a product (clicks + 3×carts, any query). Written on
+// cards and raw products so ranking keeps what production shoppers prefer; the index is rebuilt.
+export function applyPopularity(p,signals){
+ const byTail=new Map(p.productCards.map(c=>[tailOf(c.url||c.id),c])),score=new Map();
+ for(const [list,w] of [[signals.clicks,1],[signals.carts,3]])for(const e of list){const c=byTail.get(tailOf(e._id.u));if(c)score.set(c.id,(score.get(c.id)||0)+e.n*w);}
+ const raws=new Map(p.catalog.products.map(x=>[String(x.id),x]));
+ for(const c of p.productCards){const v=score.get(c.id)||0;if(v)c.popularity=v;else delete c.popularity;const raw=raws.get(c.id);if(raw){if(v)raw.popularity=v;else delete raw.popularity;}}
+ p.searchIndex=buildSearchIndex(p.productCards,'popularity-'+Date.now());
+ return score.size;
+}
 export function buildBaseline(p,signals,{minSearches=3,limit=600}={}){
  const cards=p.productCards||[],byTail=new Map(cards.map(c=>[tailOf(c.url||c.id),c])),byTitle=new Map(cards.map(c=>[normalize(c.title),c]));
  const shown=c=>c&&!c.hidden&&c.stockStatus==='instock';
@@ -50,14 +61,16 @@ export function buildBaseline(p,signals,{minSearches=3,limit=600}={}){
 export function evaluateBaseline(p,profile,baseline=p.baseline,{index,only}={}){
  if(!baseline?.queries?.length)return null;
  const idx=index||p.searchIndex||buildSearchIndex(p.productCards,'baseline');
- const retrieve=createIndexRetriever(p.productCards,{...profile,tenantId:p.id},idx);
+ const retrieve=createIndexRetriever(p.productCards,{...profile,tenantId:p.id},idx),byId=new Map(p.productCards.map(c=>[c.id,c])),shown=c=>c&&!c.hidden&&c.stockStatus==='instock';
  const results=baseline.queries.filter(b=>!only||only.has(b.query)).map(b=>{
-  const r=retrieve(b.query),ids=r.matches.slice(0,KEEP_TOP).map(m=>m.id),rank=new Map(ids.map((id,i)=>[id,i+1]));
+  const r=retrieve(b.query),ids=applyRanking(r.matches,profile.rankingRules,b.query).matches.slice(0,KEEP_TOP).map(m=>m.id),rank=new Map(ids.map((id,i)=>[id,i+1]));
   if(b.production==='works'){
-   if(!b.targets.length)return {query:b.query,searches:b.searches,production:'works',status:'gap',total:r.total};
-   const found=b.targets.filter(t=>rank.has(t.id));
-   return {query:b.query,searches:b.searches,production:'works',status:found.length===b.targets.length?'kept':found.length?'partial':'lost',total:r.total,
-    missing:b.targets.filter(t=>!rank.has(t.id)).map(t=>({id:t.id,title:t.title})),ranks:Object.fromEntries(found.map(t=>[t.id,rank.get(t.id)]))};
+   // Only targets shoppers can see now count: one that went out of stock or disappeared is a catalog gap, not a search loss.
+   const targets=b.targets.filter(t=>shown(byId.get(t.id))),unavailableNow=b.targets.length-targets.length;
+   if(!targets.length)return {query:b.query,searches:b.searches,production:'works',status:'gap',total:r.total,unavailableNow};
+   const found=targets.filter(t=>rank.has(t.id));
+   return {query:b.query,searches:b.searches,production:'works',status:found.length===targets.length?'kept':found.length?'partial':'lost',total:r.total,...(unavailableNow&&{unavailableNow}),
+    missing:targets.filter(t=>!rank.has(t.id)).map(t=>({id:t.id,title:t.title})),ranks:Object.fromEntries(found.map(t=>[t.id,rank.get(t.id)]))};
   }
   return {query:b.query,searches:b.searches,production:b.production,status:r.total?'answers':'empty',total:r.total};
  });

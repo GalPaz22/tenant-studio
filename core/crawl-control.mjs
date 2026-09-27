@@ -26,7 +26,9 @@ export function crawlStatus(meta,settings,merged=null,{now=Date.now()}={}){
   blockedReason:meta.blockedReason||null,lastMerge:merged,unmerged:Math.max(0,products-(merged?.pages||0)),settings};
 }
 // An activated dedicated scraper travels with the job; without one the worker uses the generic JSON-LD extractor.
-export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null,spec:p.scraper?.status==='active'?p.scraper.spec:null};};
+// A draft scraper that passed its own validation (name and product key on ≥80% of sample pages) is used too.
+export const scraperReady=s=>!!s?.spec&&(s.status==='active'||s.status==='draft'&&(s.validation?.fill?.name??0)>=0.8&&(s.validation?.fill?.key??0)>=0.8);
+export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null,spec:scraperReady(p.scraper)?p.scraper.spec:null};};
 export async function startCrawl(p,store,{reseed=false}={}){
  const meta=await store.meta(p.id);
  await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:reseed||!meta?.total});

@@ -3,7 +3,7 @@ export function createApi(fetcher=fetch) {
  async function read(response){
   const text=await response.text();let data;
   try{data=JSON.parse(text)}catch{throw Error(response.ok?'השרת החזיר תשובה לא תקינה':`הבקשה נכשלה (${response.status}). רעננו את החיבור ל־Studio.`)}
-  if(!response.ok)throw Object.assign(Error(data.error||'הבקשה נכשלה'),{code:data.code});
+  if(!response.ok)throw Object.assign(Error(data.error||'הבקשה נכשלה'),{code:data.code,candidates:data.candidates});
   return data;
  }
  async function session(){

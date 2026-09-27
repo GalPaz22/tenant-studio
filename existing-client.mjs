@@ -54,25 +54,31 @@ export function existingProject(username,user,docs){
  const p={id:randomUUID(),name:username,url,platform:'custom',status:'draft',events:[],messages:[],revisions:[{number:1,profile,note:'פתיחת לקוח קיים מהנתונים השמורים',createdAt:new Date().toISOString()}],existingClient:{username,dbName:user.dbName,collection:user.collections?.products||'products',loadedAt:new Date().toISOString(),tags,categories},catalog:{products,coverage:{scope:'saved-database-snapshot',complete:true,count:products.length}},storeContext:{name:username,summary:'נתונים שמורים של לקוח קיים',categories, tags},updatedAt:new Date().toISOString()};
  const rt=createDraftRuntime(p,p.revisions[0]);p.productCards=rt.products;p.searchIndex=rt.index;p.productCardsProfileHash=hash(profile);return p;
 }
-export async function resolveExistingUser(collection,input){
- const value=input.trim(),projection={dbName:1,collections:1};
+// Several users can share a name or a dbName (the store, staff, a studio login). An ambiguous input is not guessed:
+// the error carries the candidates (identifying fields only, never keys or credentials) so the operator picks one, and
+// the pick comes back as userId — accepted only if that user really matches the typed input.
+export async function resolveExistingUser(collection,input,{userId=null}={}){
+ const value=input.trim(),projection={dbName:1,collections:1,username:1,name:1,platform:1};
  for(const field of ['username','name','dbName']){
-  const matches=await collection.find({[field]:value},{projection}).limit(2).toArray();
-  if(matches.length>1)throw Error('נמצאו כמה לקוחות תואמים. יש להזין שם משתמש או שם לקוח ייחודי');
+  const matches=await collection.find({[field]:value},{projection}).limit(20).toArray();
+  if(userId){const pick=matches.find(m=>String(m._id)===String(userId));if(pick)return pick;continue;}
+  if(matches.length>1)throw Object.assign(Error('נמצאו כמה לקוחות בשם הזה — בחרו את הלקוח הנכון'),{code:'AMBIGUOUS',candidates:matches.map(m=>({userId:String(m._id),username:m.username||null,name:m.name||null,dbName:m.dbName||null,platform:m.platform||null}))});
   if(matches.length===1)return matches[0];
  }
  return null;
 }
-export async function loadExistingClient(username){
+export async function loadExistingClient(username,{userId=null}={}){
+ if(userId!==null&&(typeof userId!=='string'||!/^[a-f0-9]{24}$/i.test(userId)))throw Error('בחירת לקוח לא תקינה');
  if(typeof username!=='string'||!username.trim()||username.length>120)throw Error('יש להזין שם משתמש קיים');
  const uri=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;if(!uri)throw Error('לא הוגדר חיבור למסד הנתונים של הלקוחות');
  const client=new MongoClient(uri,{serverSelectionTimeoutMS:8000});
- try{await client.connect();const user=await resolveExistingUser(client.db('users').collection('users'),username);
+ try{await client.connect();const user=await resolveExistingUser(client.db('users').collection('users'),username,{userId});
  if(!user?.dbName)throw Error('לא נמצא לקוח עם שם המשתמש הזה');
  const collection=client.db(user.dbName).collection(user.collections?.products||'products');
  const docs=await collection.find({},{projection:{...Object.fromEntries(sourceFieldNames.map(k=>[k,1])),id:1,name:1,title:1,description:1,description1:1,enrichedDescription:1,categories:1,tags:1,softCategories:1,category:1,specifications:1,sku:1,url:1,permalink:1,image:1,images:1,price:1,regular_price:1,stockStatus:1,stock_status:1,available:1,status:1,hidden:1,notInStore:1,catalog_visibility:1},maxTimeMS:30000}).limit(50001).toArray();
  if(docs.length>50000)throw Error('הקטלוג גדול מ־50,000 מוצרים; נדרש חיבור מדורג לפני פתיחה');
- return existingProject(username.trim(),user,docs);
+ // A picked user is stored under its own username, so the next open finds this exact client again.
+ return existingProject(userId?(user.username||user.name||username).trim():username.trim(),user,docs);
  }finally{await client.close()}
 }
 

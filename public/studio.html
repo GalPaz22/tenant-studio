@@ -16,6 +16,11 @@
  <form id="open-client" class="open-client">
   <label for="client-username">פתח לקוח קיים</label>
   <div class="row"><input id="client-username" required maxlength="120" dir="ltr" placeholder="username"><button class="primary" aria-label="פתח">←</button></div>
+  <div id="client-picker" class="client-picker" role="group" aria-label="בחירת לקוח" hidden></div>
+ </form>
+ <form id="new-client" class="open-client">
+  <label for="client-url">לקוח חדש מכתובת אתר</label>
+  <div class="row"><input id="client-url" required maxlength="300" dir="ltr" placeholder="store.co.il"><button class="primary" aria-label="קלוט לקוח">←</button></div>
  </form>
  <nav id="client-list" aria-label="לקוחות"></nav>
  <a class="classic" href="/index.html">ממשק מתקדם (בנייה, סריקה, הגדרות)</a>
@@ -25,8 +30,10 @@
  <header class="chat-head">
   <div><h1 id="client-name">בחר לקוח</h1><p id="client-meta" class="meta"></p></div>
   <div class="head-actions">
+  <button id="demo-site" type="button" class="ghost" title="פותח את האתר של הלקוח כמו שהוא, עם החיפוש שלנו במקום החיפוש שלהם" disabled>הדגמה על האתר</button>
   <button id="audit-check" type="button" class="ghost" title="בודק את החיפושים המובילים, שהחזירו 0 תוצאות או שלא נלחצו, מול הכללים הנוכחיים" disabled>בדוק חיפושים</button>
   <button id="audit-fix" type="button" class="primary" title="בודק ומתקן אוטומטית; נשמרים רק תיקונים שעברו אימות" disabled>בדוק ותקן</button>
+  <button id="delete-client" type="button" class="ghost danger" title="מוחק את הלקוח מהסטודיו (לא נוגע במסד של הלקוח)" hidden>מחק לקוח</button>
   <span id="client-version" class="pill" hidden></span>
  </div>
  </header>
@@ -54,11 +61,13 @@
  <div class="tabs" role="tablist">
   <button role="tab" data-tab="search" aria-selected="true">חיפוש חי</button>
   <button role="tab" data-tab="baseline" aria-selected="false">מול הקיים</button>
+  <button role="tab" data-tab="performance" aria-selected="false">בקרת חיפוש</button>
   <button role="tab" data-tab="processing" aria-selected="false">עיבוד</button>
   <button role="tab" data-tab="product" aria-selected="false">מוצר</button>
   <button role="tab" data-tab="concierge" aria-selected="false">קונסיירז׳</button>
   <button role="tab" data-tab="versions" aria-selected="false">גרסאות וכללים</button>
   <button role="tab" data-tab="crawler" aria-selected="false">סורק</button>
+  <button role="tab" data-tab="takeover" aria-selected="false">החלפת חיפוש</button>
  </div>
  <div class="pane" data-pane="search">
   <form id="live-search" class="live-search"><input id="query" placeholder="נסה חיפוש כמו לקוח בחנות"><button class="primary">חפש</button></form>
@@ -75,8 +84,10 @@
   <form id="concierge-chat" class="live-search" hidden><input id="concierge-message" maxlength="1000" placeholder="כתוב כמו לקוח בחנות"><button>שלח</button></form>
  </div>
  <div class="pane" data-pane="baseline" hidden><div id="baseline" class="baseline"></div></div>
+ <div class="pane" data-pane="performance" hidden><div id="performance" class="baseline"></div></div>
  <div class="pane" data-pane="processing" hidden><div id="processing" class="baseline"></div></div>
  <div class="pane" data-pane="crawler" hidden><div id="crawler" class="crawler"></div></div>
+ <div class="pane" data-pane="takeover" hidden><div id="takeover" class="baseline takeover"></div></div>
  <div class="pane" data-pane="versions" hidden><div id="rules" class="rules"></div><div id="versions" class="versions"></div></div>
 </section>
 <div id="toast" role="alert" hidden></div>

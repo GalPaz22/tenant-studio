@@ -30,8 +30,9 @@ export function mountSearch(root,{endpoint,apiKey,autocompleteEndpoint}) {
   'widget.mjs':widget,
   'INSTALL.md':`# ${revision.profile.name}\nDraft revision ${revision.number}.\n\nInstall search.mjs and profile.json under tenants/<tenant>/ in dashboard-server. Register this factory behind authenticated tenant routing before connecting widget.mjs. No live tenant binding has been created.\n\nImport mountSearch from widget.mjs and supply the deployed /search URL and existing storefront API key. Never supply an admin or Studio token. This initial widget renders first-page search and badges; autocomplete/load-more and platform sync installation still need integration.\n\nPlatform: ${project.platform}. Catalog: bounded public sample, not a full synced inventory. Mongo/Atlas provisioning in Studio is staging only.\n`
  };
- const shared=['runtime.mjs','discover.mjs','core/core.mjs','core/gemini.mjs','core/semantic.mjs','core/router.mjs','core/spelling.mjs','core/search-index.mjs','core/catalog.mjs','core/connectors.mjs','core/embeddings.mjs','tenants/garmin/index.mjs','core/build.mjs','core/run-store.mjs','core/domains.mjs','core/research.mjs','core/evidence-tagging.mjs','core/sync.mjs','core/merchant-facts.mjs','model.mjs','scraper.mjs','provision.mjs'];
- for(const file of shared)files[file]=readFileSync(new URL(file,import.meta.url),'utf8');
+ const shared=['runtime.mjs','discover.mjs','core/core.mjs','core/gemini.mjs','core/semantic.mjs','core/ranking.mjs','core/router.mjs','core/spelling.mjs','core/search-index.mjs','core/catalog.mjs','core/connectors.mjs','core/embeddings.mjs','tenants/garmin/index.mjs','core/build.mjs','core/run-store.mjs','core/domains.mjs','core/research.mjs','core/evidence-tagging.mjs','core/sync.mjs','core/merchant-facts.mjs','model.mjs','scraper.mjs','provision.mjs'];
+ // Every local module the shared entry points import travels too, so a new import cannot break the exported package.
+ for(const file of localImports([...shared,'core/hook-worker.mjs']))files[file]=readFileSync(new URL(file,import.meta.url),'utf8');
  files['package.json']=JSON.stringify({name:'semantix-tenant-'+project.id,private:true,type:'module',dependencies:{'@google/genai':'^2.17.1',cheerio:'^1.0.0',dotenv:'^16.4.5',mongodb:'^6.8.0'}},null,2);
  files['catalog.json']=JSON.stringify(project.catalog||{products:[]});
  files['snapshot.json']=JSON.stringify({productCards:project.productCards||null,productCardsProfileHash:project.productCardsProfileHash||hash(revision.profile),tagAssignments:project.tagAssignments||{},storeContext:project.storeContext||null,searchIndex:project.searchIndex||null,vectorIndex:project.vectorIndex||null});
@@ -59,4 +60,13 @@ add_shortcode('semantix_tenant_search', function() {
 });
 `;
  return {revision:revision.number,platform:project.platform,status:'draft-not-deployed',files};
+}
+// Transitive closure of relative imports, as paths relative to this folder.
+export function localImports(entries){
+ const seen=new Set(),queue=[...entries];
+ while(queue.length){const file=queue.shift();if(seen.has(file))continue;seen.add(file);
+  const source=readFileSync(new URL(file,import.meta.url),'utf8');
+  for(const m of source.matchAll(/(?:^|[;\n])\s*(?:import|export)\s[^'"]*?from\s*['"](\.{1,2}\/[^'"]+)['"]|import\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g)){
+   const spec=m[1]||m[2],next=new URL(spec,new URL(file,import.meta.url)).pathname.slice(new URL('.',import.meta.url).pathname.length);if(!seen.has(next))queue.push(next);}}
+ return [...seen];
 }

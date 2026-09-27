@@ -54,3 +54,27 @@ test('errors survive the round trip as a list (URLs are not safe field names) an
  assert.equal(crawlStatus(null,crawlSettings({})).status,'none');
 });
 test('a missing pid file never counts as a live worker',async()=>{const {alive}=await import('./core/crawl-control.mjs');assert.equal(alive(0),false);assert.equal(alive(Number('')),false);assert.equal(alive(process.pid),true);});
+
+test('a worker that stops making progress exits so a fresh one resumes; beats keep it alive',async()=>{
+ const {watchdog}=await import('./core/crawl-worker.mjs');
+ let clock=0,stalled=null;const dog=watchdog({stallMs:30*60000,everyMs:5,now:()=>clock,onStall:m=>{stalled=m;}});
+ clock=20*60000;dog.beat();clock=45*60000;await new Promise(r=>setTimeout(r,20));assert.equal(stalled,null,'a checkpoint 25 minutes ago is still progress');
+ clock=51*60000;await new Promise(r=>setTimeout(r,20));assert.equal(stalled,31,'31 minutes without a beat: exit');dog.stop();
+});
+
+test('the studio runs a tenant’s crawl itself, only that tenant, once at a time; a validated draft scraper is used',async()=>{
+ const {runInProcess,runningInProcess}=await import('./core/crawl-worker.mjs');const {crawlTarget,scraperReady}=await import('./core/crawl-control.mjs');
+ let t=Date.parse('2026-09-26T10:00:00Z');const {store,crawls}=fakeStore(()=>new Date(t));
+ const other={...project,id:'22222222-2222-2222-2222-222222222222'};await startCrawl(other,store);await startCrawl(project,store);
+ const seed=async p=>({projectId:p.id,origin:p.url,status:'ready',robots:{rules:[]},sources:{},queue:[p.url+'/1'],next:0,products:{},errors:{},failures:0,startedAt:'s'});
+ const crawled=[];let release;const gate=new Promise(r=>{release=r;});
+ const run=async(state,{store:s})=>{crawled.push(state.projectId);await gate;state.products['1']={sku:'1'};state.next=1;await s.save(state);state.status='done';};
+ const first=runInProcess(store,project.id,{seed,run,log:()=>{}});assert.equal(runInProcess(store,project.id,{seed,run,log:()=>{}}),first,'a second start joins the running crawl');
+ await new Promise(r=>setTimeout(r,10));assert.equal(runningInProcess(project.id),true);assert.deepEqual(crawled,[project.id],'only the requested tenant, not the other queued one');
+ release();await first;assert.equal(runningInProcess(project.id),false);assert.equal(crawls.docs.get(project.id).status,'done');assert.equal(crawls.docs.get(other.id).lease,undefined);
+
+ const spec={productUrl:'^https://shop\\.example/product/([^/]+)'};
+ assert.equal(crawlTarget({...project,scraper:{status:'draft',spec,validation:{fill:{name:1,key:1}}}}).spec,spec,'validated draft scraper');
+ assert.equal(crawlTarget({...project,scraper:{status:'draft',spec,validation:{fill:{name:0.5,key:1}}}}).spec,null,'an unvalidated draft is not');
+ assert.equal(scraperReady({status:'active',spec}),true);
+});
