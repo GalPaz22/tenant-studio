@@ -25,7 +25,7 @@ export function engineTag(project){
  // configVersion changes whenever the project is saved, so an edit in the studio shows on the next demo load
  // instead of after the loader's 5-minute config cache.
  const settings={apiBase:base,apiKey:'studio-preview',engineSrc:base+'/engine.js',version:String(Date.now()),configVersion:String(project.updatedAt||''),
-  endpoints:{siteConfig:'/site-config',search:'/search',fastSearch:'/fast-search',productClick:'/product-click',searchToCart:'/search-to-cart',zeroSearch:'/zero-search'}};
+  endpoints:{siteConfig:'/site-config',search:'/search',fastSearch:'/fast-search',productClick:'/product-click',searchToCart:'/search-to-cart',zeroSearch:'/zero-search',autocomplete:'/autocomplete'}};
  // Stores that already run Semantix (e.g. through GTM) assign their own SemantixSettings later in the page, and the
  // mirror also injects this tag into HTML fragments the site loads with AJAX. Both would replace the preview's settings
  // (and the config the loader attached to them), so the preview's object is pinned and later assignments are ignored.
@@ -39,6 +39,8 @@ export function engineTag(project){
 export function previewConfig(takeover){
  const cfg=structuredClone(takeover?.siteConfig||{});
  cfg.consent={...(cfg.consent||{}),enabled:false};cfg.debug={enabled:true};
+ // On the studio host the mirror lives under /demo/<id>/, so the results path is matched anywhere in the path.
+ if(cfg.replace?.searchPath)cfg.replace.searchPath=cfg.replace.searchPath.replace(/^\^/,'');
  return cfg;
 }
 
@@ -47,6 +49,8 @@ export function engineProducts(matches,productUrl){
  return (matches||[]).map(p=>({id:p.id,name:p.title,url:productUrl(p.url),image:p.image,price:p.price,regularPrice:p.regularPrice,
   onSale:Number.isFinite(p.regularPrice)&&Number.isFinite(p.price)&&p.regularPrice>p.price,stockStatus:p.stockStatus,author:p.specifications?.author||'',sku:p.sku||''}));
 }
+// Studio search results → dashboard-server GET /autocomplete rows.
+export const engineSuggestions=(matches,productUrl)=>(matches||[]).map(p=>({suggestion:p.title,source:'products',id:p.id,url:productUrl(p.url),image:p.image,price:p.price}));
 export const enginePage=(r,productUrl)=>({products:engineProducts(r.matches,productUrl),pagination:{hasMore:!!r.nextCursor,nextToken:r.nextCursor||null,totalAvailable:r.total??null,returned:(r.matches||[]).length}});
 
 const logs=new Map(),LIMIT=200;

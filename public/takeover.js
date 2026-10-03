@@ -3,15 +3,17 @@ import {demoUrl as mirrorUrl} from './demo-url.js';
 //   demo       — lives in the studio project; detection writes it, the operator edits it, the demo mirror runs it.
 //   production — credentials.siteConfig on the store's users; only "copy demo → production" writes it (hash-checked,
 //                backed up, restorable).
-const STEP_LABELS={platform:'פלטפורמה',searchForm:'טופס חיפוש',resultsGrid:'גריד תוצאות',productCard:'כרטיס מוצר',noResults:'הודעת "אין תוצאות"',page2:'עמוד 2',hide:'אלמנטים להסתרה',cardTemplate:'תבנית כרטיס',cardFill:'מילוי תבנית',addToCart:'הוספה לסל'};
+const STEP_LABELS={root:'אזור התוכן (בין ההאדר לפוטר)',autocomplete:'הצעות חיפוש מקוריות',platform:'פלטפורמה',searchForm:'טופס חיפוש',resultsGrid:'גריד תוצאות',productCard:'כרטיס מוצר',noResults:'הודעת "אין תוצאות"',page2:'עמוד 2',hide:'אלמנטים להסתרה',cardTemplate:'תבנית כרטיס',cardFill:'מילוי תבנית',addToCart:'הוספה לסל'};
 const KIND_LABELS={count:'מונה',sort:'מיון',pager:'עימוד',filters:'מסננים'};
 const ATC_MODES={engine:'המנוע מוסיף לסל של החנות',link:'הכפתור פותח את דף המוצר',off:'בלי כפתור הוספה לסל'};
 const ATC_SHORT={engine:'מנוע',link:'דף מוצר',off:'כבוי'};
-const EVENT_LABELS={'preview-cart-add':'הוספה לסל (בדמו — לא נשלחה לחנות)','search':'חיפוש','fast-search':'חיפוש מהיר','load-more':'טעינת עוד','auto-load-more':'טעינת עוד','product-click':'קליק על מוצר','search-to-cart':'עגלה / צ׳קאאוט','zero-search':'חיפוש ללא תוצאות'};
+const EVENT_LABELS={autocomplete:"הצעות חיפוש",'preview-cart-add':'הוספה לסל (בדמו — לא נשלחה לחנות)','search':'חיפוש','fast-search':'חיפוש מהיר','load-more':'טעינת עוד','auto-load-more':'טעינת עוד','product-click':'קליק על מוצר','search-to-cart':'עגלה / צ׳קאאוט','zero-search':'חיפוש ללא תוצאות'};
 const list=v=>(Array.isArray(v)?v:v==null?[]:[v]).filter(Boolean).join(', ')||null;
 // Rows of the demo ↔ production comparison: [label, shown value, compared value].
 const ROWS=[
  ['החלפה מלאה',c=>c?.features?.fullReplace===true?'פעילה':'כבויה',c=>c?.features?.fullReplace===true],
+ ['היקף בדף החיפוש',c=>c?.replace?.scope==='main'?`כל האזור (${list(c.replace.root)||'main'})`:'הגריד בלבד',c=>c?.replace?.scope==='main'?list(c.replace.root):'grid'],
+ ['הצעות חיפוש',c=>c?.features?.autocomplete===true?(c.autocomplete?.mount?'בתוך '+c.autocomplete.mount:'פאנל מתחת לשדה'):'של החנות',c=>c?.features?.autocomplete===true?JSON.stringify(c.autocomplete||{}):false],
  ['פלטפורמה',c=>c?.platform||null],
  ['פרמטר חיפוש',c=>list(c?.queryParams)],
  ['גריד תוצאות',c=>list(c?.selectors?.resultsGrid)],
@@ -25,11 +27,11 @@ const ROWS=[
  ['מעקב קליקים',c=>c?.clickTracking?.universalLinkSelector||null],
 ];
 
-export async function renderTakeover({root,project,api,streamInto,el,toast,fill,loading}){
+export async function renderTakeover({root,project,api,download,streamInto,el,toast,fill,loading}){
  const id=project.id,base='/projects/'+id+'/takeover';
  loading(root);
  let view;try{view=await api(base);}catch(err){fill(root,el('p',{class:'error'},err.message));return;}
- const again=()=>renderTakeover({root,project,api,streamInto,el,toast,fill,loading});
+ const again=()=>renderTakeover({root,project,api,download,streamInto,el,toast,fill,loading});
  const guarded=fn=>async e=>{const b=e?.currentTarget;if(b)b.disabled=true;try{await fn();}catch(err){toast(err.message);}finally{if(b?.isConnected)b.disabled=false;}};
  const detect=guarded(async()=>{await streamInto(root,base+'/detect',{});again();});
  const t=view.takeover;
@@ -59,6 +61,14 @@ export async function renderTakeover({root,project,api,streamInto,el,toast,fill,
    const box=el('input',{type:'checkbox',checked:hidden.has(h.selector),onchange:guarded(async()=>{box.checked?hidden.add(h.selector):hidden.delete(h.selector);await api(base+'/settings',{hide:[...hidden]});})});
    return el('label',{class:'tk-check'},box,el('span',{},el('b',{},h.kinds.map(k=>KIND_LABELS[k]||k).join(' · ')),' ',code(h.selector),el('small',{class:'meta'},h.text)));
   }):[el('p',{class:'meta'},'לא נמצאו אלמנטים להסתרה.')]));
+
+ // How much of the store's search is replaced. Each part can be switched off; it comes back with the next save.
+ const det0=t.detectedConfig||t.siteConfig,ac=det0.autocomplete;
+ const mainBox=el('input',{type:'checkbox',checked:t.siteConfig.replace?.scope==='main',disabled:det0.replace?.scope!=='main',onchange:guarded(async()=>{await api(base+'/settings',{scope:mainBox.checked?'main':'grid'});again();})});
+ const acBox=el('input',{type:'checkbox',checked:t.siteConfig.features?.autocomplete===true,disabled:!ac,onchange:guarded(async()=>{await api(base+'/settings',{autocomplete:acBox.checked});again();})});
+ const scopeCard=card('מה מוחלף',
+  el('label',{class:'tk-check'},mainBox,el('span',{},el('b',{},'כל דף החיפוש, בין ההאדר לפוטר'),' ',det0.replace?.scope==='main'?code(det0.replace.root):'',el('small',{class:'meta'},det0.replace?.scope==='main'?'כותרת ותוצאות של Semantix בכרטיסי המוצר המקוריים; כל שאר התוכן המקורי של הדף מוסתר. עובד גם כשלחיפוש המקורי אין תוצאות. כבוי = מוחלפים רק הכרטיסים בגריד.':'לא זוהה אזור תוכן — מוחלפים רק הכרטיסים בגריד.'))),
+  el('label',{class:'tk-check'},acBox,el('span',{},el('b',{},'הצעות חיפוש (אוטוקומפליט)'),' ',ac?code(ac.input):'',el('small',{class:'meta'},ac?`הרכיב המקורי מוסר (${ac.hide?.join(', ')||'לא נמצא רכיב מקורי'}) וההצעות שלנו נפתחות ${ac.mount?'בתוך '+ac.mount+', מתחת לשדה':'בפאנל מתחת לשדה'}.`:'לא זוהה שדה חיפוש.'))));
 
  // Settings are saved as the operator edits; a text field saves when it loses focus.
  // Saves run one after another: the server refuses a second write while one is in progress.
@@ -157,6 +167,11 @@ export async function renderTakeover({root,project,api,streamInto,el,toast,fill,
  };
  drawCompare(null);
 
+ // Shipping (Shopify app, WooCommerce plugin, daily feed, rollout and measurement) lives in the "תוסף" tab.
+ const shipping=el('section',{class:'tk-card tk-wide'},el('h4',{},'התקנה בחנות ושליטה מרחוק'),
+  el('p',{class:'meta'},'ייצוא ופריסה של אפליקציית Shopify או תוסף WooCommerce, עדכון הפיד היומי, מדידת הרכישות וחלוקת הגולשים בין Semantix לחיפוש המקורי נמצאים בלשונית ״תוסף״.'),
+  el('div',{class:'row'},el('button',{type:'button',class:'primary',onclick:()=>document.querySelector('[data-tab="plugin"]')?.click()},'פתח את לשונית התוסף')));
+
  // Tracking seen while the demo was used.
  const events=el('div',{class:'tk-events'});
  const drawEvents=items=>{events.replaceChildren(items.length?el('ul',{},...items.slice(-30).reverse().map(e=>el('li',{},el('span',{class:'meta'},e.at.slice(11,19)),' ',el('b',{},EVENT_LABELS[e.kind]||e.kind),e.body?code(JSON.stringify(e.body).slice(0,140),JSON.stringify(e.body)):''))):el('p',{class:'meta'},'עוד לא נרשמו אירועים. פתחו הדגמה, חפשו, לחצו על מוצר והוסיפו לסל.'));};
@@ -170,5 +185,5 @@ export async function renderTakeover({root,project,api,streamInto,el,toast,fill,
   el('details',{},el('summary',{},'תצורת הדמו המלאה (JSON)'),el('pre',{dir:'ltr',class:'code'},JSON.stringify({...t.siteConfig,nativeCard:{...t.siteConfig.nativeCard,cardTemplate:'…'}},null,2))),
   el('p',{class:'meta'},view.engine==='local'?'ההדגמה טוענת את המנוע מ־semantix-cdn המקומי (כולל שינויים שעוד לא נפרסו).':'ההדגמה טוענת את המנוע מה־CDN המפורסם.'));
 
- fill(root,el('div',{class:'tk'},head,warnBox,el('div',{class:'tk-grid'},detected,hideCard,loaderCard,atcCard,manual,tracking,compare,technical)));
+ fill(root,el('div',{class:'tk'},head,warnBox,el('div',{class:'tk-grid'},detected,scopeCard,hideCard,loaderCard,atcCard,manual,tracking,shipping,compare,technical)));
 }

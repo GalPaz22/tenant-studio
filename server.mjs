@@ -39,12 +39,16 @@ import {newBuild,validateBuildOptions,executeBuild} from './core/build.mjs';
 import {hash} from './core/catalog.mjs';
 import {buildSearchIndex} from './core/search-index.mjs';
 import {createMongoRetriever} from './core/mongo-retriever.mjs';
-import {connectorFor} from './core/connectors.mjs';
+import {connectorFor,useShopifyInstalls} from './core/connectors.mjs';
+import {createInstalls,appCredentials,appUrls,publicUrl,validHmac,validShop,authorizeUrl,exchangeCode,fetchFeed,applyFeed,validateFeed,feedDue,newState,ensurePixel,SCOPES} from './core/shopify-feed.mjs';
 import {validateSync,syncDue} from './core/sync.mjs';
 import {createMirror,overlayTag,SiteBlocked,fetchOrigin,isChallenge} from './core/site-mirror.mjs';
 import {detectTakeover,mergeSiteConfig,applySettings} from './core/search-takeover.mjs';
-import {readSiteConfig,publishSiteConfig,rollbackSiteConfig,listBackups,storefrontDefaults} from './core/takeover-control.mjs';
-import {engineTag,engineSource,engineDir,previewConfig,enginePage,recordEvent,readEvents,clearEvents} from './core/takeover-preview.mjs';
+import {readSiteConfig,publishSiteConfig,rollbackSiteConfig,listBackups,storefrontDefaults,readRollout,publishRollout,apiBase as searchApiBase} from './core/takeover-control.mjs';
+import {readRolloutReport} from './core/rollout-report.mjs';
+import {engineTag,engineSource,engineDir,previewConfig,enginePage,engineSuggestions,recordEvent,readEvents,clearEvents} from './core/takeover-preview.mjs';
+import {buildShopifyTakeover,buildWooTakeover,shopSlug} from './core/takeover-export.mjs';
+import {publishToShopify,readApp,organizations,appsDir,settings as shopifySettings} from './core/shopify-apps.mjs';
 import {createNativeSearch,catalogLookup} from './core/native-search.mjs';
 import {storeHome,detectStore,demoBuildOptions} from './core/onboard.mjs';
 import {fetchPublic} from './discover.mjs';
@@ -93,6 +97,16 @@ app.use((req,res,next)=>{
 const route=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
 // ---------- demo mirror: the tenant's own site, with semantix search injected ----------
 const mirror=createMirror({dataDir}),native=createNativeSearch();
+// Store tokens of installed client apps (Shopify). The catalog connector reads through them as well.
+// With a database they are shared: the public studio receives the install, the studio holding the project runs the feed.
+const installsUri=process.env.STUDIO_SHOPIFY_INSTALLS==='file'?null:process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;
+let installsClient=null;
+const installsCollection=installsUri?async()=>{
+ if(!installsClient){const {MongoClient}=await import('mongodb');installsClient=new MongoClient(installsUri,{serverSelectionTimeoutMS:10000,socketTimeoutMS:60000});}
+ await installsClient.connect();return installsClient.db(process.env.STUDIO_CRAWL_DB||'semantix_studio').collection('shopify_installs');
+}:null;
+// (Shared tokens are first read by the feed tick, not at start-up.)
+const installs=createInstalls(dataDir,{collection:installsCollection});if(!installs.shared)installs.load().catch(e=>console.error('shopify installs',e.message));useShopifyInstalls(installs.peek);
 const lookups=new WeakMap();
 function lookupFor(rt,url){if(!lookups.has(rt))lookups.set(rt,catalogLookup(rt.products,new URL(url).origin));return lookups.get(rt);}
 // Up to n semantix results (the service pages at 50).
@@ -144,6 +158,13 @@ app.post('/demo/:id/__semantix/engine/:kind(search|fast-search)',route(async(req
 app.get('/demo/:id/__semantix/engine/search/:more(load-more|auto-load-more)',route(async(req,res)=>{
  recordEvent(req.params.id,req.params.more,{});await engineSearch(req,res,{cursor:String(req.query.token||''),limit:24});
 }));
+// Suggestions under the search field (features.autocomplete), in the shape of dashboard-server GET /autocomplete.
+app.get('/demo/:id/__semantix/engine/autocomplete',route(async(req,res)=>{
+ const query=String(req.query.query||'').trim().slice(0,200);if(query.length<2)return res.json([]);
+ if(active>=2)return res.status(429).json({error:'busy'});active++;
+ try{const project=await store.meta(req.params.id),r=await (await runtime(req.params.id)).search({query,limit:8});recordEvent(req.params.id,'autocomplete',{query});
+  res.json(engineSuggestions(r.matches,u=>demoProductUrl(req.params.id,project.url,u,demoPrefix(req,req.params.id))));}finally{active--;}
+}));
 // Tracking the engine sends (product-click, search-to-cart incl. checkout, zero-search…) is logged for verification only.
 app.post('/demo/:id/__semantix/engine/:event([a-z-]{3,40})',route(async(req,res)=>{await store.meta(req.params.id);recordEvent(req.params.id,req.params.event,req.body);res.status(204).end();}));
 
@@ -185,6 +206,39 @@ app.all(DEMO,route(async(req,res)=>{
   if(e instanceof SiteBlocked){const min=Math.max(1,Math.ceil((e.until-Date.now())/60000));return res.status(503).set('Retry-After',String(min*60)).type('text/html; charset=utf-8').send(`<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><title>ההדגמה מושהית</title><body style="font-family:system-ui;max-width:560px;margin:12vh auto;padding:0 16px;line-height:1.6;color:#1b1f24"><h1 style="font-size:22px">האתר ביקש אימות מהשרת של ההדגמה</h1><p>מנגנון הגנת הבוטים של ${String(new URL(p.url).hostname).replace(/[<>&"]/g,'')} חסם זמנית בקשות מהשרת הזה. ההדגמה לא עוקפת את החסימה.</p><p>דפים שכבר נטענו בעבר ממשיכים לעבוד מהמטמון. נסו שוב בעוד כ־${min} דקות, או בקשו מהלקוח להתיר את כתובת ה־IP של השרת.</p><p><a href="javascript:history.back()">חזרה</a></p></body></html>`);}
   res.status(502).type('text/plain; charset=utf-8').send('המראה לא הצליח לטעון את הדף מהאתר: '+e.message);
  }
+}));
+// ---------- a client's Shopify app opening its application URL (public: Shopify signs these requests with the app's secret) ----------
+// The merchant never sees the studio. Every request here ends in a redirect to the store's own Shopify admin — the
+// theme editor's App embeds panel, with Semantix Search offered for activation — whether the install was completed
+// now, was already complete, or could not be completed (the reason is logged; the studio shows the install as missing).
+const adminUrl=(shop,clientId)=>validShop(shop)?`https://${shop}/admin/themes/current/editor?context=apps${clientId?'&activateAppId='+encodeURIComponent(clientId+'/semantix-search'):''}`:'https://admin.shopify.com/';
+function shopifyRequest(req){
+ const id=req.params.id,creds=/^[a-f0-9-]{36}$/.test(id)?appCredentials(id):null,urls=creds&&appUrls(id),shop=String(req.query.shop||'');
+ if(!creds||!urls)return {shop,error:'app credentials are not configured on this studio (STUDIO_SHOPIFY_APPS / STUDIO_PUBLIC_URL)'};
+ if(!validShop(shop)||!validHmac(req.query,creds.secret))return {shop,error:'the request signature could not be verified'};
+ return {id,creds,urls,shop};
+}
+const toAdmin=(req,res,r,why)=>{if(why)console.error('[shopify-install]',req.params.id,why);res.redirect(302,adminUrl(r.shop,r.creds?.clientId));};
+// application_url: Shopify sends the merchant here right after installing, and whenever they open the app.
+app.get('/shopify/:id/app',route(async(req,res)=>{
+ const r=shopifyRequest(req);if(r.error)return toAdmin(req,res,r,r.error);
+ const install=await installs.get(r.id);
+ if(install?.shop===r.shop)return toAdmin(req,res,r);
+ const state=newState();res.cookie('sx_shopify_state',state,{path:'/shopify/'+r.id,httpOnly:true,secure:true,sameSite:'lax',maxAge:10*60000});
+ res.redirect(302,authorizeUrl({shop:r.shop,clientId:r.creds.clientId,redirectUrl:r.urls.redirectUrl,state}));
+}));
+app.get('/shopify/:id/callback',route(async(req,res)=>{
+ const r=shopifyRequest(req);if(r.error)return toAdmin(req,res,r,r.error);
+ const sent=/(?:^|;\s*)sx_shopify_state=([a-f0-9]{32})(?:;|$)/.exec(req.get('Cookie')||'')?.[1];
+ if(!sent||sent!==String(req.query.state||'')||typeof req.query.code!=='string')return toAdmin(req,res,r,'the authorization did not come from the browser that started it');
+ try{
+  const granted=await (app.locals.exchangeCode||exchangeCode)({shop:r.shop,code:req.query.code,clientId:r.creds.clientId,secret:r.creds.secret});
+  await installs.set(r.id,{shop:r.shop,token:granted.token,scope:granted.scope,installedAt:new Date().toISOString()});
+  // The daily feed starts with the install. The project may live in another studio (this one only received the
+  // install); that studio starts the feed when it sees the token (adoptInstalls).
+  await startFeed(r.id,r.shop).catch(e=>{if(e.code!=='ENOENT')throw e;});
+ }catch(e){res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});return toAdmin(req,res,r,e.message);}
+ res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});toAdmin(req,res,r);
 }));
 app.get('/api/session',(_req,res)=>res.json({token}));
 app.use('/api', (req,res,next)=>{
@@ -314,6 +368,84 @@ async function syncTick(){if(syncing)return;syncing=true;try{for(const item of a
  const prior=await runs.read(p.latestBuildId);await enqueueBuild(p.id,prior.options,{trigger:'sync'});
  }await drainBuilds();}finally{syncing=false;}}
 const syncTimer=setInterval(()=>syncTick().catch(console.error),30000);syncTimer.unref();
+// ---------- daily product feed from the store's own Shopify app ----------
+// One run: read the catalog through the store's token, lay it over the project (prices, stock, new and removed
+// products), then pass it on — the module's edition (republished by persist) and the store's products collection.
+async function feedOnce(id,onNote=()=>{}){
+ const p=await store.read(id),install=await installs.get(id);
+ if(!install)throw Error('האפליקציה של החנות עוד לא הותקנה ב־Shopify (או שההתקנה לא הושלמה מול הסטודיו)');
+ const schedule=on=>validateFeed({enabled:on,intervalMinutes:p.shopifyFeed?.intervalMinutes});
+ let result;
+ try{
+  const rows=await (app.locals.fetchFeed||fetchFeed)({shop:install.shop,token:install.token,onPage:n=>onNote(`נקראו ${n} מוצרים מ־Shopify…`)});
+  result=applyFeed(p,rows);
+ }catch(e){
+  // A revoked token ends the feed until the app is opened again; anything else is retried in an hour.
+  const gone=e.code==='UNAUTHORIZED';if(gone)await installs.remove(id);
+  p.shopifyFeed={...schedule(!gone&&p.shopifyFeed?.enabled!==false),nextAt:new Date(Date.now()+60*60000).toISOString(),last:{at:new Date().toISOString(),error:e.message}};
+  p.events.push({text:'עדכון הפיד מ־Shopify נכשל: '+e.message,at:new Date().toISOString()});await persist(p);throw e;
+ }
+ const changed=result.updated+result.added+result.removed+result.restored>0;
+ p.shopifyFeed={...schedule(p.shopifyFeed?.enabled!==false),last:result};
+ p.events.push({text:`פיד Shopify: ${result.updated} עודכנו, ${result.added} חדשים, ${result.removed} ירדו${result.restored?`, ${result.restored} חזרו`:''}`,at:result.at});
+ // Prices and stock do not change the module's edition key, so its publish is asked for explicitly.
+ if(changed){publishState.delete(id);runtimes.clear();}
+ await persist(p);
+ if(changed&&p.existingClient?.createdByStudio){
+  onNote('מעדכן את מסד המוצרים של החנות…');
+  try{result.dashboard=await (app.locals.syncProductsToDashboard||syncProductsToDashboard)(p);}catch(e){result.dashboardError=e.message;console.error('[shopify-feed] dashboard',id,e.message);}
+ }
+ return result;
+}
+// The first run is due immediately.
+async function startFeed(id,shop){
+ const p=await store.read(id),at=new Date().toISOString();
+ p.shopifyFeed={...validateFeed({enabled:true,intervalMinutes:p.shopifyFeed?.intervalMinutes}),nextAt:at,last:p.shopifyFeed?.last||null};
+ p.events.push({text:`אפליקציית Shopify הותקנה בחנות ${shop}; עדכון פיד יומי הופעל`,at});await persist(p);
+}
+// Installs received by another studio: a project here that has a token but never had a feed gets one, and so does
+// one whose feed stopped on an error before the store was installed again.
+async function adoptInstalls(metas){
+ if(!installs.shared)return;
+ const ids=new Set(await installs.ids());
+ for(const item of metas){
+  if(!ids.has(item.id)||locks.has(item.id))continue;const install=await installs.get(item.id),f=item.feed;
+  if(f&&!(f.enabled===false&&f.last?.error&&install.installedAt>f.last.at))continue;
+  await startFeed(item.id,install.shop).catch(e=>console.error('[shopify-feed] adopt',item.id,e.message));
+ }
+}
+// Purchase measurement: the app's checkout pixel is created in the store once the install allows it and the store has
+// a site key (it reports to the search server with that key). Tried again every 10 minutes until both exist.
+const pixelTried=new Map();
+async function ensureTracking(id){
+ const install=await installs.get(id);if(!install)throw Error('האפליקציה של החנות עוד לא הותקנה');
+ if(!/(^|,)write_pixels(,|$)/.test(install.scope||''))throw Error('ההתקנה בחנות היא מגרסה בלי הרשאת פיקסל — הסוחר צריך לאשר את העדכון של האפליקציה ולפתוח אותה שוב');
+ const p=await store.read(id),key=(await (app.locals.storefrontDefaults||storefrontDefaults)(p)).apiKey;
+ if(!key)throw Error('לחנות אין עדיין מפתח אתר (חיבור לדאשבורד) — הפיקסל מדווח עם המפתח הזה');
+ const settings={apiBase:searchApiBase(),apiKey:key},settingsHash=hash([settings,install.shop]).slice(0,16);
+ if(p.shopifyPixel?.settingsHash===settingsHash)return p.shopifyPixel;
+ const r=await (app.locals.ensurePixel||ensurePixel)({shop:install.shop,token:install.token,settings}),at=new Date().toISOString();
+ p.shopifyPixel={id:r.id,settingsHash,at};p.events.push({text:'מדידת רכישות הופעלה בחנות (Web Pixel)',at});await persist(p);
+ return p.shopifyPixel;
+}
+async function trackingTick(metas){
+ if(!installs.shared&&!(await installs.ids()).length)return;
+ const ids=new Set(await installs.ids());
+ for(const item of metas){
+  if(!ids.has(item.id)||item.pixel||locks.has(item.id)||Date.now()-(pixelTried.get(item.id)||0)<10*60000)continue;
+  pixelTried.set(item.id,Date.now());
+  await locked(item.id,()=>ensureTracking(item.id)).catch(e=>console.error('[shopify-pixel]',item.id,e.message));
+ }
+}
+let feeding=false;
+async function feedTick(){if(feeding)return;feeding=true;try{
+ await adoptInstalls(await store.metas()).catch(e=>console.error('[shopify-feed] installs',e.message));
+ await trackingTick(await store.metas()).catch(e=>console.error('[shopify-pixel]',e.message));
+ for(const item of await store.metas()){
+ if(!feedDue(item)||locks.has(item.id)||active>=2)continue;
+ try{await locked(item.id,()=>feedOnce(item.id));}catch(e){console.error('[shopify-feed]',item.id,e.message);}
+ }}finally{feeding=false;}}
+const feedTimer=setInterval(()=>feedTick().catch(console.error),60000);feedTimer.unref();
 app.get('/api/projects',route(async(_req,res)=>res.json(await store.list())));
 app.get('/api/projects/:id',route(async(req,res)=>res.json(await projectSummary(await store.read(req.params.id)))));
 app.post('/api/existing-client',route(async(req,res)=>locked('existing-client',async()=>{
@@ -685,7 +817,7 @@ app.post('/api/projects/:id/takeover/detect',route(async(req,res)=>streamed(req,
  const p=await store.read(req.params.id);if(!p.url)throw Error('לפרויקט אין כתובת אתר');
  const result=await detectTakeover({url:p.url,products:p.productCards||[],fetchPage:guard(app.locals.takeoverFetch||takeoverFetch),onEvent:guard(async e=>send(e.type==='step'?{type:'note',text:`${e.ok?'✓':'✗'} ${e.name}: ${e.detail}`}:e))});
  // A fresh detection becomes the new base; the operator's settings are carried over and re-applied.
- const next={...result,detectedConfig:result.siteConfig,settings:p.takeover?.settings,published:p.takeover?.published||null};
+ const next={...result,detectedConfig:result.siteConfig,settings:p.takeover?.settings,published:p.takeover?.published||null,shopifyApp:p.takeover?.shopifyApp||null};
  p.takeover=applyTakeoverSettings(next,{});
  await persist(p);return takeoverView(p);
 })));
@@ -709,6 +841,56 @@ app.post('/api/projects/:id/takeover/rollback',route(async(req,res)=>locked(req.
  if(p.takeover)p.takeover.published=null;p.events.push({type:'takeover-rolled-back',at:new Date().toISOString(),backup:result.restored});await persist(p);res.json({...takeoverView(p),result});
 })));
 
+// The takeover as a Shopify Theme App Extension: the demo configuration and the engine, in one app embed.
+async function takeoverExport(p,body,build=buildShopifyTakeover){
+ if(!takeoverView(p).takeover?.ready)throw Error('הזיהוי לא הושלם בהצלחה — אין מה לייצא');
+ // The site key: the one typed in, otherwise the store's own from the dashboard (none yet → set in the embed's settings).
+ let apiKey=String(body?.apiKey||'').trim();
+ if(!apiKey)try{apiKey=(await (app.locals.storefrontDefaults||storefrontDefaults)(p)).apiKey||'';}catch{}
+ return build(p,{apiBase:body?.apiBase,apiKey,engine:(await engineSource('engine.js')).code});
+}
+const shopifyExtension=(p,body)=>takeoverExport(p,body);
+// The takeover as a WordPress plugin for a WooCommerce store.
+app.post('/api/projects/:id/takeover/woo-plugin',route(async(req,res)=>{
+ const p=await store.read(req.params.id),{manifest,files}=await takeoverExport(p,req.body,buildWooTakeover);
+ res.set('Content-Disposition',`attachment; filename="semantix-woocommerce-${manifest.slug}-${manifest.version}.zip"`).type('application/zip').send(zipFiles(files));
+}));
+// Rollout from the server: the share of visitors who get Semantix instead of the store's own search. Operator action
+// only; it writes one key of the production siteConfig and reaches storefronts within their 5-minute config cache.
+app.get('/api/projects/:id/takeover/rollout',route(async(req,res)=>res.json(await (app.locals.readRollout||readRollout)(await store.read(req.params.id)))));
+// What the split did: visitors, searchers, clicks, carts and purchases per group, from the store's own events.
+app.get('/api/projects/:id/takeover/rollout/report',route(async(req,res)=>res.json(await (app.locals.readRolloutReport||readRolloutReport)(await store.read(req.params.id),{days:req.query.days===undefined?undefined:Number(req.query.days)}))));
+app.post('/api/projects/:id/takeover/rollout',route(async(req,res)=>locked(req.params.id,async()=>{
+ const p=await store.read(req.params.id),percent=req.body?.percent===null?null:Number(req.body?.percent);
+ const result=await (app.locals.publishRollout||publishRollout)(p,percent,{backups:takeoverBackups()});
+ p.events.push({type:'takeover-rollout',at:result.at,text:percent===null?'חלוקת A/B הוסרה מהפרודקשן':`Semantix ל־${percent}% מהגולשים (פרודקשן)`});await persist(p);
+ res.json({...result,backup:result.backup.split('/').pop()});
+})));
+// The client's own Shopify app in the local apps folder: created on the first publish, a new version on every one.
+app.get('/api/shopify/organizations',route(async(_req,res)=>res.json({organizations:await (app.locals.shopifyOrganizations||organizations)()})));
+app.get('/api/projects/:id/takeover/shopify-app',route(async(req,res)=>{
+ const p=await store.read(req.params.id);res.json({folder:appsDir(),app:await readApp(shopSlug(p.url)),organizationId:(await shopifySettings()).organizationId||null,published:p.takeover?.shopifyApp||null});
+}));
+app.get('/api/projects/:id/shopify-feed',route(async(req,res)=>{
+ const p=await store.read(req.params.id);
+ res.json({publicUrl:publicUrl(),urls:appUrls(p.id),credentials:!!appCredentials(p.id),install:await installs.view(p.id),feed:p.shopifyFeed||null,pixel:p.shopifyPixel?{id:p.shopifyPixel.id,at:p.shopifyPixel.at}:null});
+}));
+app.post('/api/projects/:id/shopify-pixel',route(async(req,res)=>locked(req.params.id,async()=>{const r=await ensureTracking(req.params.id);res.json({id:r.id,at:r.at});})));
+app.post('/api/projects/:id/shopify-feed',route(async(req,res)=>locked(req.params.id,async()=>{
+ const p=await store.read(req.params.id);p.shopifyFeed={...validateFeed({enabled:req.body?.enabled===true,intervalMinutes:req.body?.intervalMinutes??p.shopifyFeed?.intervalMinutes}),last:p.shopifyFeed?.last||null};
+ await persist(p);res.json(p.shopifyFeed);
+})));
+app.post('/api/projects/:id/shopify-feed/run',route(async(req,res)=>streamed(req,res,async send=>({result:await feedOnce(req.params.id,text=>send({type:'note',text}))}))));
+app.post('/api/projects/:id/takeover/shopify-publish',route(async(req,res)=>streamed(req,res,async send=>{
+ const p=await store.read(req.params.id),built=await shopifyExtension(p,req.body),urls=appUrls(p.id);
+ const result=await (app.locals.publishToShopify||publishToShopify)(built,{organizationId:req.body?.organizationId,appName:req.body?.appName,sync:urls&&{...urls,scopes:SCOPES},onLine:text=>send({type:'note',text:text.slice(0,200)})});
+ p.takeover.shopifyApp=result;p.events.push({type:'shopify-published',at:result.deployedAt,text:`אפליקציית Shopify ${result.name||result.slug}: גרסה ${result.version}`});await persist(p);
+ return {result};
+})));
+app.post('/api/projects/:id/takeover/shopify-extension',route(async(req,res)=>{
+ const p=await store.read(req.params.id),{manifest,files}=await shopifyExtension(p,req.body);
+ res.set('Content-Disposition',`attachment; filename="semantix-shopify-${manifest.slug}-${manifest.version}.zip"`).type('application/zip').send(zipFiles(files));
+}));
 app.get('/api/projects/:id/storefront-defaults',route(async(req,res)=>res.json(await (app.locals.storefrontDefaults||storefrontDefaults)(await store.read(req.params.id)))));
 app.post('/api/projects/:id/storefront-plugin',route(async(req,res)=>{
  const p=await store.read(req.params.id);

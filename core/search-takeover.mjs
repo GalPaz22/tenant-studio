@@ -127,6 +127,41 @@ export function findHidden($,grid){
  return kinds;
 }
 
+// ---------- the whole results area (replace.scope "main") ----------
+// The content element between the site header and footer that holds the grid: the page's own landmark when it has one,
+// otherwise the highest ancestor of the grid with no footer and no search field inside it.
+const LANDMARKS=['main','[role="main"]','#main','#MainContent','#maincontent','#content'];
+export function findRoot($,grid){
+ for(const sel of LANDMARKS){const m=$(grid).closest(sel)[0];if(m&&m!==grid)return m;}
+ let root=null;
+ for(let n=grid.parent;n&&n.type==='tag'&&!['body','html'].includes(n.tagName);n=n.parent){if($(n).find('footer,[role="contentinfo"],[role="banner"],input[type="search"]').length)break;root=n;}
+ return root;
+}
+// The levels from below the root down to the grid, as the engine rebuilds them on a page with no native grid.
+export const shellOf=(root,grid)=>{const out=[];for(let n=grid;n&&n!==root;n=n.parent)out.unshift({tag:n.tagName,cls:stableClasses(n)});return out;};
+
+// ---------- the store's own search suggestions ----------
+// Walking up from the search field, a sibling of the field's branch that is (or wraps) a suggestions element is the
+// store's component. One that is itself the suggestions list is hidden and ours opens as a panel under the field; one
+// that only wraps it (the body of a search drawer or modal) keeps its place — its content is hidden and ours mounts there.
+const AC_MARK=/predictive|suggest|autocomplete|search[-_]{1,2}results|quick[-_]?search|live[-_]?search/i;
+const acMark=el=>AC_MARK.test([el.tagName,el.attribs?.class||'',el.attribs?.id||'',Object.keys(el.attribs||{}).join(' ')].join(' '));
+export function findAutocomplete($,input){
+ const hide=[];let mount=null;
+ for(let n=input,depth=0;n?.parent?.type==='tag'&&!['body','html'].includes(n.parent.tagName)&&depth<8;n=n.parent,depth++){
+  for(const sib of $(n.parent).children().toArray()){
+   if(sib===n||['script','style','template','svg','button','label','input','noscript'].includes(sib.tagName)||$(sib).find('input:not([type="hidden"])').length)continue;
+   if(acMark(sib)){const sel=uniqueSelector($,sib,{chrome:true});if(sel)hide.push(sel);continue;}
+   if(mount||!$(sib).find('*').toArray().some(acMark))continue;
+   const sel=uniqueSelector($,sib,{chrome:true});if(!sel)continue;
+   const inner=$(sib).children().toArray().filter(c=>!['script','style','template'].includes(c.tagName)).map(c=>uniqueSelector($,c,{chrome:true}));
+   if(inner.length&&inner.every(Boolean)){mount=sel;hide.push(...inner);}
+  }
+  if(hide.length||['header','form'].includes(n.parent.tagName)&&depth>3)break;
+ }
+ return {hide:[...new Set(hide)],mount};
+}
+
 // ---------- card template ----------
 const decode=s=>{try{return decodeURI(s);}catch{return s;}};
 const sameUrl=(a,b,base)=>{try{const x=new URL(a,base),y=new URL(b,base);return x.hostname.replace(/^www\./,'')===y.hostname.replace(/^www\./,'')&&decode(x.pathname).replace(/\/+$/,'')===decode(y.pathname).replace(/\/+$/,'');}catch{return false;}};
@@ -202,7 +237,8 @@ export function buildCardTemplate($,cards,base){
  const imgs=$c('img').toArray(),main=imgs.find(i=>$c(i).closest('a[href="{{url}}"]').length)||imgs[0];
  if(main){main.attribs.src='{{image}}';main.attribs.alt='{{name}}';for(const k of ['data-src','data-original','data-lazy-src'])if(main.attribs[k])main.attribs[k]='{{image}}';}
  for(const img of imgs)if(img!==main&&img.attribs.alt==='{{name}}')img.attribs.src='{{image}}';
- let priced=false,named=false,decimals=null;
+ let priced=false,named=false,decimals=null,regulared=false;
+ const COMPARE=/compare|old|regular|was|original|strike/i;
  // The catalog price does not always match what the card shows (rounding, a sale computed by the theme). Without an
  // exact match, the first number inside a price element (a sale/current price first) is the price.
  const priceClass=n=>{for(let x=n.parent;x&&x!==root.parent;x=x.parent)if(/price/i.test(x.attribs?.class||''))return x.attribs.class;return null;};
@@ -213,19 +249,32 @@ export function buildCardTemplate($,cards,base){
   const s=t.data.trim(),path=pathOf(t,root);
   if(title&&s===title){t.data=t.data.replace(title,'{{name}}');named=true;continue;}
   if(author&&s===author){t.data=t.data.replace(author,'{{author}}');continue;}
+  // The price before a discount: shown only for discounted products (data-semantix-if), so its element goes with it.
+  if(!regulared&&/\d/.test(s)&&COMPARE.test(priceClass(t)||'')){
+   const m=/\d[\d,.]*/.exec(t.data);t.data=t.data.replace(m[0],'{{regularPrice}}');regulared=true;
+   for(let x=t.parent;x&&x!==root;x=x.parent)if(COMPARE.test(x.attribs?.class||'')){x.attribs['data-semantix-if']='onSale';break;}
+   continue;
+  }
   const pf=price.find(f=>new RegExp('(^|[^\\d.,])'+f.replace(/[.,]/g,'\\$&')+'($|[^\\d])').test(s));
   if(pf&&!priced){t.data=t.data.replace(pf,'{{price}}');priced=true;decimals=/[.,]\d{2}$/.test(pf)?2:0;continue;}
   if(variableText.has(t)){cleared.push(s.slice(0,60));t.data='';}
  }
  // Attributes that change from card to card and did not become a token belong to the sample product. Classes keep
  // the tokens every card shares; other attributes are dropped (a per-product link keeps its text but loses its target).
+ // An element left empty whose per-product style went with them (a colour swatch) has nothing to show and goes too,
+ // with the wrappers that held only it — even ones that carry a token in an attribute.
+ const unstyled=[];
  for(const [el,vary] of variableAttrs)for(const [k,twins] of vary){
   const v=el.attribs?.[k];if(v===undefined||v.includes('{{'))continue;
   if(k==='class')el.attribs.class=tokens(v).filter(c=>twins.every(t=>tokens(t).includes(c))).join(' ');
-  else{delete el.attribs[k];if(k!=='href')cleared.push('@'+k);}
+  else{delete el.attribs[k];if(k!=='href')cleared.push('@'+k);
+   if(k==='style'&&el!==root&&!['img','input','br','hr','source','video','iframe','picture','a','button'].includes(el.tagName))unstyled.push(el);}
  }
  // Empty wrappers left by removed badges are dropped so they do not keep their spacing.
- let changed=true;while(changed){changed=false;$c(root).find('span,div,p,em,strong,b,i,small').each((_,el)=>{if(!$c(el).children().length&&!$c(el).text().trim()&&!/\{\{/.test($c.html(el))){$c(el).remove();changed=true;}});}
+ const prune=()=>{let changed=true;while(changed){changed=false;$c(root).find('span,div,p,em,strong,b,i,small').each((_,el)=>{if(!$c(el).children().length&&!$c(el).text().trim()&&!/\{\{/.test($c.html(el))){$c(el).remove();changed=true;}});}};
+ const bare=el=>!$c(el).children().length&&!$c(el).text().trim();
+ for(const el of unstyled){if(!bare(el))continue;let up=el.parent;$c(el).remove();while(up&&up!==root&&up.type==='tag'&&bare(up)){const next=up.parent;$c(up).remove();up=next;}}
+ prune();
  const html=$c.html(root).replace(/\s{2,}/g,' ').trim();
  return {html,priceDecimals:decimals,stockTokens:[...stockAttrs.values()].flatMap(a=>Object.keys(a)),source:{productId:p.id,title,url:p.url},checks:{name:named,price:priced,image:!!main,url:html.includes('{{url}}')},addToCart:!!atc&&html.includes('data-semantix-atc'),cleared};
 }
@@ -233,7 +282,7 @@ export function buildCardTemplate($,cards,base){
 // Fills a template the way the engine does, for verification and preview.
 export function fillTemplate(template,p){
  const out=isOut(p)?'true':'false';
- const vals={outOfStock:out,inStock:out==='true'?'false':'true',url:p.url||'',link:p.url||'',name:p.title||p.name||'',title:p.title||p.name||'',image:p.image||'',img:p.image||'',price:Number.isFinite(Number(p.price))?Number(p.price).toLocaleString('he-IL'):'',id:String(p.id??''),product_id:String(p.id??''),sku:p.sku||'',author:p.specifications?.author||''};
+ const vals={outOfStock:out,inStock:out==='true'?'false':'true',url:p.url||'',link:p.url||'',name:p.title||p.name||'',title:p.title||p.name||'',image:p.image||'',img:p.image||'',price:Number.isFinite(Number(p.price))?Number(p.price).toLocaleString('he-IL'):'',regularPrice:Number(p.regularPrice)>Number(p.price)?Number(p.regularPrice).toLocaleString('he-IL'):'',id:String(p.id??''),product_id:String(p.id??''),sku:p.sku||'',author:p.specifications?.author||''};
  return template.replace(/\{\{([A-Za-z_]+)\}\}/g,(m,k)=>k in vals?vals[k]:m);
 }
 
@@ -324,7 +373,16 @@ export async function detectTakeover({url,products,fetchPage,onEvent=async()=>{}
    await step('addToCart',true,`${uniqueSelector($p,form[0],{chrome:true})||form[0].tagName} · ${form.attr('action')?new URL(form.attr('action'),origin).pathname.replace(/\d+/g,'#'):'—'}${needsChoice?' · דורש בחירת אפשרויות (יפתח את דף המוצר)':''}${form.find('input[name="form_key"]').length?' · form_key':''}`);
   }
  }
- const autocomplete=$home('#search_autocomplete,.search-autocomplete,.predictive-search,predictive-search,.dgwt-wcas-suggestions-wrapp,.aws-search-result,[class*="autocomplete"]').toArray().map(el=>uniqueSelector($home,el,{chrome:true})).filter(Boolean).slice(0,3);
+ // Whole results area: the root must be the same element on a page with no results, where the grid is rebuilt in it.
+ const rootEl=findRoot($r,found.grid),rootSel=rootEl?uniqueSelector($r,rootEl,{chrome:true}):null;
+ const rootOk=!!rootSel&&(!$z||$z(rootSel).length===1);
+ await step('root',rootOk,rootSel?rootSel+(rootOk?'':' — לא קיים בדף ללא תוצאות'):'לא נמצא אזור תוכן בין ההאדר לפוטר');
+ const scope=rootOk?{scope:'main',root:rootSel,shell:shellOf(rootEl,found.grid),titleClass:stableClasses($r(rootEl).find('h1').first()[0]).join(' ')}:{scope:'grid'};
+ // The store's own suggestions, from the page every visitor starts on.
+ const inputEl=search.inputSelector?$home(search.inputSelector).first()[0]:null,ac=inputEl?findAutocomplete($home,inputEl):null;
+ if(inputEl)await step('autocomplete',true,ac.hide.length?`להסיר: ${ac.hide.join(', ')}${ac.mount?' · להציג בתוך '+ac.mount:' · פאנל מתחת לשדה'}`:'לא נמצא רכיב הצעות מקורי — פאנל מתחת לשדה');
+ else await step('autocomplete',false,'לא נמצא שדה חיפוש בדף הבית');
+ const autocomplete=ac?{input:search.inputSelector,hide:ac.hide,mount:ac.mount}:null;
  const searchPath=search.path.replace(/\/+$/,'')||'/';
  // Cart events carry the platform's own product id; when the card shows one that is not the catalog id, attribution
  // must map it (by product URL/name, which the events also carry).
@@ -336,8 +394,9 @@ export async function detectTakeover({url,products,fetchPage,onEvent=async()=>{}
   queryParams:[search.param],
   selectors:{resultsGrid:[gridSel],productCard:[cardSel],noResults:noResults?[noResults.selector]:undefined,searchInput:search.inputSelector||undefined},
   nativeCard:{cardTemplate:card.html,useCustomTemplate:true,...(card.priceDecimals!=null&&{priceDecimals:card.priceDecimals})},
-  features:{fullReplace:true,zeroReplace:true},
-  replace:{searchPath:searchPath==='/'?null:'^'+searchPath.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),hide:hidden.map(h=>h.selector)},
+  features:{fullReplace:true,zeroReplace:true,autocomplete:!!autocomplete},
+  replace:{searchPath:searchPath==='/'?null:'^'+searchPath.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),hide:hidden.map(h=>h.selector),...scope},
+  ...(autocomplete&&{autocomplete}),
   cartInterceptor:CART[platform]?{enabled:true,...CART[platform]}:{enabled:true},
   // Product clicks: any link inside a product card, on search and category pages alike.
   clickTracking:{enabled:true,universalMode:true,universalLinkSelector:`${cardSel} a[href]`},
@@ -352,7 +411,8 @@ export function mergeSiteConfig(current,proposal){
  const cur=current&&typeof current==='object'?current:{};
  const out={...cur,platform:proposal.platform,queryParams:proposal.queryParams,clickTracking:{...(cur.clickTracking||{}),...proposal.clickTracking},selectors:{...(cur.selectors||{}),...Object.fromEntries(Object.entries(proposal.selectors).filter(([,v])=>v!==undefined))},
   nativeCard:{...(cur.nativeCard||{}),...proposal.nativeCard},features:{...(cur.features||{}),...proposal.features},replace:proposal.replace,
-  cartInterceptor:{...(cur.cartInterceptor||{}),...proposal.cartInterceptor},addToCart:{...(cur.addToCart||{}),...(proposal.addToCart||{})}};
+  cartInterceptor:{...(cur.cartInterceptor||{}),...proposal.cartInterceptor},addToCart:{...(cur.addToCart||{}),...(proposal.addToCart||{})},
+  ...(proposal.autocomplete&&{autocomplete:proposal.autocomplete})};
  return out;
 }
 
@@ -377,6 +437,8 @@ export function applySettings(t,patch={}){
  const prev=t.settings||{},next={...prev};
  if(Array.isArray(patch.hide))next.hide=patch.hide.filter(s=>typeof s==='string');
  if(ATC.includes(patch.addToCart))next.addToCart=patch.addToCart;
+ if(['grid','main'].includes(patch.scope))next.scope=patch.scope;
+ if(typeof patch.autocomplete==='boolean')next.autocomplete=patch.autocomplete;
  if(patch.loader&&typeof patch.loader==='object'){
   const l={...(prev.loader||{})};
   if(LOADERS.includes(patch.loader.type))l.type=patch.loader.type;
@@ -405,6 +467,9 @@ export function applySettings(t,patch={}){
  const cfg=structuredClone(t.detectedConfig),hide=new Set(next.hide||t.hidden.map(h=>h.selector));
  cfg.replace={...cfg.replace,hide:t.hidden.map(h=>h.selector).filter(s=>hide.has(s))};
  if(next.loader)cfg.replace.loader={...next.loader};
+ // The whole-area takeover and our suggestions can be switched off, never on without what detection found for them.
+ if(next.scope==='grid')cfg.replace.scope='grid';
+ if(next.autocomplete===false&&cfg.features)cfg.features.autocomplete=false;
  if(cfg.addToCart){
   if(next.addToCart&&(next.addToCart==='off'||t.card?.addToCart))cfg.addToCart.mode=next.addToCart;
   if(next.atcText)cfg.addToCart={...cfg.addToCart,...next.atcText};

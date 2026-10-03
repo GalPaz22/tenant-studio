@@ -1,6 +1,10 @@
+// The store's own Shopify app (core/shopify-feed.mjs), once installed, is an authorized read connection too.
+let shopifyInstall=()=>null;
+export const useShopifyInstalls=lookup=>{shopifyInstall=lookup;};
 export function connectorFor(project) {
   let configs;try{configs=JSON.parse(process.env.STUDIO_CONNECTORS||'{}')}catch{throw Error('STUDIO_CONNECTORS אינו JSON תקין');}
-  const config=configs[project.id];if(!config)return null;
+  const install=project.platform==='shopify'&&!configs[project.id]?shopifyInstall(project.id):null;
+  const config=configs[project.id]||(install&&{host:new URL(project.url).hostname,shop:install.shop,token:install.token});if(!config)return null;
   const host=new URL(project.url).hostname;
   if(config.host!==host)throw Error('החיבור המורשה אינו תואם לדומיין החנות');
   if(project.platform==='woocommerce'&&config.key&&config.secret)return {kind:'woocommerce',headers:{Authorization:'Basic '+Buffer.from(config.key+':'+config.secret).toString('base64')}};

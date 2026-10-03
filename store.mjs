@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 // full project files (they can exceed 100MB). The meta records the project file's mtime and is rebuilt when stale.
 export function metaOf(p){
  return {id:p.id,url:p.url,platform:p.platform,name:p.name,status:p.status,revision:p.revisions?.length||0,products:p.productCards?.length||0,existing:!!p.existingClient,updatedAt:p.updatedAt,
-  username:p.existingClient?.username||null,tagging:!!p.tagging,sync:p.sync||null,pendingSyncEvents:p.pendingSyncEvents?.length||0,latestBuildId:p.latestBuildId||null,buildRunId:p.buildRunId||null,crawler:p.crawler||null,siteCrawlPages:p.siteCrawl?.pages||0};
+  username:p.existingClient?.username||null,tagging:!!p.tagging,sync:p.sync||null,feed:p.shopifyFeed||null,pixel:p.shopifyPixel?.settingsHash||null,pendingSyncEvents:p.pendingSyncEvents?.length||0,latestBuildId:p.latestBuildId||null,buildRunId:p.buildRunId||null,crawler:p.crawler||null,siteCrawlPages:p.siteCrawl?.pages||0};
 }
 const LIST_FIELDS=['id','url','platform','name','status','revision','products','existing','updatedAt'];
 export function createStore(root) {

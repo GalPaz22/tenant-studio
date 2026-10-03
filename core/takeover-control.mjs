@@ -65,3 +65,50 @@ export async function rollbackSiteConfig(project,name,{backups,...opts}={}){
   return {users:r.modifiedCount??writes.length,restored:name};
  },opts);
 }
+
+// ---------- rollout: who gets Semantix and who gets the store's own search ----------
+// One A/B test in the store's siteConfig, read by the engine on every storefront (the CDN loader fetches siteConfig;
+// the Shopify / WooCommerce exports lay it over their written configuration). The split is by a hash of the visitor
+// id, not remembered in the browser ("sticky": false), so moving the percentage moves visitors: raising it only adds
+// visitors to Semantix, 0 returns everyone to the store's search, 100 gives Semantix to all. Visitors on the store's
+// search stay in shadow mode — their searches, clicks and cart events are still recorded (with the variant), which is
+// what makes the two groups comparable.
+export const ROLLOUT_TEST='semantix_takeover';
+export function rolloutTest(percent,{at=new Date().toISOString(),by='tenant-studio'}={}){
+ if(!Number.isInteger(percent)||percent<0||percent>100)throw Error('אחוז הגולשים שמקבלים את Semantix: מספר שלם בין 0 ל־100');
+ return {enabled:true,sticky:false,updatedAt:at,updatedBy:by,variants:[{id:'semantix',weight:percent},{id:'native',weight:100-percent,features:{shadowMode:true}}]};
+}
+// The percentage a siteConfig gives Semantix; null when it has no rollout test (everyone gets what the configuration says).
+export function rolloutOf(siteConfig){
+ const t=siteConfig?.abTests?.[ROLLOUT_TEST];if(!t||t.enabled===false||!Array.isArray(t.variants))return null;
+ const total=t.variants.reduce((n,v)=>n+(Number(v.weight)||0),0);if(total<=0)return null;
+ return Math.round(100*(Number(t.variants.find(v=>v.id==='semantix')?.weight)||0)/total);
+}
+export const readRollout=(project,opts)=>withUsers(async users=>{
+ const docs=await users.find(userFilter(project),{projection:{_id:0,username:1,name:1,'credentials.siteConfig.abTests':1}}).limit(20).toArray();
+ if(!docs.length)throw Error('לא נמצא משתמש עם מפתח API למסד של הלקוח הזה ב־users.users');
+ const percents=docs.map(d=>rolloutOf(configOf(d)));
+ return {users:docs.map(label),percent:percents[0],consistent:percents.every(p=>p===percents[0]),updatedAt:configOf(docs[0])?.abTests?.[ROLLOUT_TEST]?.updatedAt||null};
+},opts);
+// percent: 0–100, or null to remove the test. Only this one key of siteConfig is written; each user's previous
+// siteConfig is saved first, in the same backups the takeover publish uses (so the same rollback restores it).
+export async function publishRollout(project,percent,{backups,by='tenant-studio',...opts}={}){
+ const test=percent===null?null:rolloutTest(percent,{by});
+ return withUsers(async users=>{
+  const docs=await users.find(userFilter(project),{projection:{_id:1,username:1,name:1,'credentials.siteConfig':1}}).limit(20).toArray();
+  if(!docs.length)throw Error('לא נמצא משתמש עם מפתח API למסד של הלקוח הזה ב־users.users');
+  const at=new Date().toISOString();
+  await mkdir(backups,{recursive:true});
+  const file=join(backups,`siteconfig-${project.id}-${at.replace(/[:.]/g,'-')}.json`);
+  await writeFile(file,JSON.stringify({projectId:project.id,at,by,reason:'rollout',users:docs.map(d=>({_id:String(d._id),label:label(d),siteConfig:configOf(d)}))},null,1));
+  const stamp={'credentials.siteConfigUpdatedAt':at,'credentials.siteConfigUpdatedBy':by},path='credentials.siteConfig.abTests.'+ROLLOUT_TEST;
+  const writes=docs.map(d=>{const cur=configOf(d);
+   // A user without a siteConfig object gets one holding only the test; a dotted $set cannot pass through null.
+   const update=test===null?(cur?.abTests?{$unset:{[path]:''},$set:stamp}:{$set:stamp})
+    :cur&&typeof cur==='object'&&(cur.abTests===undefined||(cur.abTests&&typeof cur.abTests==='object'))?{$set:{[path]:test,...stamp}}
+    :{$set:{'credentials.siteConfig':{...(cur&&typeof cur==='object'?cur:{}),abTests:{[ROLLOUT_TEST]:test}},...stamp}};
+   return {updateOne:{filter:{_id:d._id},update}};});
+  const r=await users.bulkWrite(writes,{ordered:true});
+  return {users:r.modifiedCount??docs.length,backup:file,percent,at};
+ },opts);
+}

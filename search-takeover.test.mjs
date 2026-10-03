@@ -4,9 +4,10 @@ import {mkdtemp,readdir,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {load} from 'cheerio';
-import {detectTakeover,mergeSiteConfig,fillTemplate,buildCardTemplate,findGrid,uniqueSelector,sampleQueries,ZERO_QUERY,applySettings,cleanTemplate} from './core/search-takeover.mjs';
+import {detectTakeover,mergeSiteConfig,fillTemplate,buildCardTemplate,findGrid,findRoot,findAutocomplete,shellOf,uniqueSelector,sampleQueries,ZERO_QUERY,applySettings,cleanTemplate} from './core/search-takeover.mjs';
+import {buildShopifyTakeover} from './core/takeover-export.mjs';
 import {publishSiteConfig,rollbackSiteConfig,readSiteConfig,configHash} from './core/takeover-control.mjs';
-import {engineTag,enginePage,previewConfig,recordEvent,readEvents,clearEvents} from './core/takeover-preview.mjs';
+import {engineTag,enginePage,engineSuggestions,previewConfig,recordEvent,readEvents,clearEvents} from './core/takeover-preview.mjs';
 
 const origin='https://shop.example';
 const products=[
@@ -56,7 +57,10 @@ test('detection finds the results grid from catalog links and proposes verified 
  // The zero-results message is the one that exists only on the zero page, not the hidden template on a results page.
  assert.equal(r.noResults.onResultsPage,false);assert.ok(load(zero)(r.noResults.selector).text().includes('לא נמצאו'));
  assert.deepEqual(r.hidden.map(h=>h.kinds.join('/')),['count/sort/filters','count/pager']);
- assert.deepEqual(r.siteConfig.replace,{searchPath:'^/catalogsearch/result',hide:r.hidden.map(h=>h.selector)});
+ // The whole results area: the page's own <main>, with the levels down to the grid for a page that has no grid.
+ assert.deepEqual(r.siteConfig.replace,{searchPath:'^/catalogsearch/result',hide:r.hidden.map(h=>h.selector),scope:'main',root:'#maincontent',
+  shell:[{tag:'div',cls:['column','main']},{tag:'div',cls:['toolbar']},{tag:'div',cls:['products','wrapper']},{tag:'ul',cls:['products','list','items','product-items']}],titleClass:''});
+ assert.equal(load(zero)(r.siteConfig.replace.root).length,1,'the root exists on a page with no results');
  assert.ok(new RegExp(r.siteConfig.replace.searchPath).test('/catalogsearch/result/')&&!new RegExp(r.siteConfig.replace.searchPath).test('/catalog/x'));
  assert.equal(r.siteConfig.features.fullReplace,true);assert.equal(r.siteConfig.platform,'magento');
  assert.deepEqual(r.siteConfig.cartInterceptor.atcPatterns,['/checkout/cart/add']);
@@ -64,7 +68,8 @@ test('detection finds the results grid from catalog links and proposes verified 
  assert.equal(r.siteConfig.clickTracking.universalLinkSelector,r.siteConfig.selectors.productCard[0]+' a[href]');
  assert.ok(r.report.steps.every(s=>s.ok),JSON.stringify(r.report.steps));
  assert.ok(r.report.warnings.some(w=>/מזהה magento פנימי/.test(w)));
- assert.ok(r.autocomplete.includes('#search_autocomplete'));
+ // The store's suggestion list next to the search form is removed; ours opens as a panel under the field.
+ assert.deepEqual(r.siteConfig.autocomplete,{input:'#search',hide:['#search_autocomplete'],mount:null});assert.equal(r.siteConfig.features.autocomplete,true);
  assert.ok(site.seen.some(u=>u.includes('p=2')));
  assert.deepEqual(r.siteConfig.addToCart,{mode:'engine'});
  assert.match(r.report.steps.find(s=>s.name==='addToCart').detail,/#product_addtocart_form · \/checkout\/cart\/add\/product\/# · form_key/);
@@ -132,12 +137,67 @@ test('publishing writes only the reviewed version, backs up each user and can be
  await assert.rejects(()=>rollbackSiteConfig(project,'../etc/passwd',{backups,client:client(users)}),/גיבוי/);
 });
 
+test('a search drawer keeps its place: its content is hidden and the suggestions mount inside it',()=>{
+ const $=load(`<body><div class="shopify-section"><store-header class="header"><a href="/search" aria-controls="search-drawer">חיפוש</a></store-header>
+  <mobile-navigation class="drawer"><div class="drawer__content"><ul><li>תפריט</li></ul></div></mobile-navigation>
+  <predictive-search-drawer id="search-drawer" class="predictive-search drawer"><span class="drawer__overlay"></span>
+   <header class="drawer__header"><form action="/search" class="predictive-search__form"><input class="predictive-search__input" type="text" name="q"></form><button type="button" class="drawer__close-button">x</button></header>
+   <div class="drawer__content"><div class="predictive-search__content-wrapper"><div hidden class="predictive-search__results"></div></div></div>
+   <footer hidden class="drawer__footer"><button type="submit">כל התוצאות</button></footer></predictive-search-drawer></div>
+  <div id="main"><div class="shopify-section shopify-section--main-search"><section><header class="page-header"><h1 class="heading h2">חיפוש</h1></header><div class="product-list__inner"><a href="/p/1">1</a></div></section></div></div>
+  <div class="shopify-section"><footer class="footer"></footer></div></body>`);
+ assert.deepEqual(findAutocomplete($,$('input.predictive-search__input')[0]),{hide:['div.predictive-search__content-wrapper'],mount:'#search-drawer div.drawer__content'});
+ // A theme without <main>: the content landmark is found by id, and a <header> inside the content does not stop it.
+ const grid=$('.product-list__inner')[0],root=findRoot($,grid);
+ assert.equal(root.attribs.id,'main');
+ assert.deepEqual(shellOf(root,grid),[{tag:'div',cls:['shopify-section','shopify-section--main-search']},{tag:'section',cls:[]},{tag:'div',cls:['product-list__inner']}]);
+});
+
+test('the price before a discount becomes a conditional part, and a swatch that lost its colour is dropped',()=>{
+ const item=(p,color)=>`<li class="card"><a href="${p.url}"><img src="${p.image}" alt="${p.title}"></a><a class="title" href="${p.url}">${p.title}</a>
+  <div class="price-list"><span class="price price--highlight">${p.price.toFixed(2)} ₪</span><span class="price price--compare"><span class="sr">מחיר</span>${(p.price+20).toFixed(2)} ₪</span></div>
+  <div class="swatches" data-url="${p.url}"><div class="swatch-wrap" data-title="${p.title}"><div class="swatch" style="background:${color}"></div></div></div></li>`;
+ const list=products.slice(0,4),$=load(`<main><ul class="grid">${list.map((p,i)=>item(p,['#111','#eee','#a00','#0a0'][i])).join('')}</ul></main>`);
+ const cards=$('li.card').toArray().map((el,i)=>({el,product:list[i]})),tpl=buildCardTemplate($,cards,origin);
+ assert.match(tpl.html,/<span class="price price--compare" data-semantix-if="onSale"><span class="sr">מחיר<\/span>\{\{regularPrice\}\} ₪<\/span>/);
+ assert.match(tpl.html,/price--highlight">\{\{price\}\} ₪/);
+ assert.ok(!tpl.html.includes('swatch'),'the colourless swatch and the wrappers that held only it are gone');
+ assert.equal(load(fillTemplate(tpl.html,{...list[1],regularPrice:79}),null,false)('.price--compare').text(),'מחיר79 ₪');
+});
+
+test('the Shopify export carries the demo configuration and the engine in one app embed',async()=>{
+ const site=fakeSite(),r=await detectTakeover({url:origin,products,fetchPage:site.fetchPage});
+ const engine='(function(){const S=window.SemantixSettings||{};})();';
+ const project={id:'p1',url:'https://www.shop.example/',takeover:{siteConfig:{...r.siteConfig,platform:'shopify'}}};
+ const {manifest,files}=buildShopifyTakeover(project,{apiBase:'https://api.example.com/',apiKey:'site_key_12345678',engine,now:new Date('2026-10-03T10:00:00Z')});
+ const block=files['extensions/semantix-search/blocks/semantix-search.liquid'];
+ assert.equal(files['extensions/semantix-search/assets/semantix-engine.js'],engine);
+ assert.match(files['extensions/semantix-search/shopify.extension.toml'],/type = "theme"/);
+ // The configuration is JSON inside {% raw %}: the card template's {{tokens}} must reach the browser untouched.
+ const raw=/siteConfig:\{% raw %\}(.*)\{% endraw %\}\};/.exec(block)[1],cfg=JSON.parse(raw);
+ assert.deepEqual(cfg,project.takeover.siteConfig);assert.ok(cfg.nativeCard.cardTemplate.includes('{{url}}'));assert.ok(!raw.includes('<'),'no markup can close the script');
+ assert.ok(block.indexOf('{% raw %}')<block.indexOf('{{url}}')&&!block.replace(/\{% raw %\}.*\{% endraw %\}/s,'').includes('{{url}}'));
+ assert.match(block,/default: 'site_key_12345678'/);assert.match(block,/default: 'https:\/\/api\.example\.com'/);assert.match(block,/"target": "head"/);assert.ok(!/consent_bar/.test(block),'no consent-bar setting');
+ assert.match(block,/engineSrc:\{\{ 'semantix-engine\.js' \| asset_url \| json \}\}/);assert.ok(!/<script src=/.test(block),'the engine is loaded by the boot script, after the remote configuration');assert.match(block,/autocomplete:"\/autocomplete"|"autocomplete":"\/autocomplete"/);
+ assert.deepEqual(manifest.features,{autocomplete:true,resultsPage:'main',addToCart:'engine'});assert.equal(manifest.siteKey,'included');assert.equal(manifest.slug,'shop');
+ assert.match(files['INSTALL.md'],/shopify app deploy/);
+ // No key at export: the embed asks for it in its settings.
+ assert.equal(buildShopifyTakeover(project,{apiBase:'https://api.example.com',engine}).manifest.siteKey,'set-in-embed-settings');
+ assert.throws(()=>buildShopifyTakeover(project,{apiBase:'http://api.example.com',engine}),/HTTPS/);
+ assert.throws(()=>buildShopifyTakeover(project,{apiBase:'https://api.example.com',apiKey:"x' | y",engine}),/מפתח/);
+ assert.throws(()=>buildShopifyTakeover({...project,takeover:{siteConfig:{...r.siteConfig}}},{apiBase:'https://api.example.com',engine}),/Shopify/);
+});
+
 test('preview pins its settings, answers in the engine shape and logs tracking',()=>{
  const tag=engineTag({id:'p1'});
  assert.match(tag,/Object\.defineProperty\(window,'SemantixSettings'/);assert.ok(tag.indexOf('defineProperty')<tag.indexOf('loader.js'));
  const page=enginePage({matches:[{id:'1',title:'א',url:'https://s/1',price:5,regularPrice:8,stockStatus:'instock',specifications:{author:'ב'}}],nextCursor:'c2',total:9},u=>'/demo/p1'+new URL(u).pathname);
  assert.deepEqual(page.pagination,{hasMore:true,nextToken:'c2',totalAvailable:9,returned:1});assert.equal(page.products[0].url,'/demo/p1/1');assert.equal(page.products[0].onSale,true);
  assert.equal(previewConfig({siteConfig:{consent:{enabled:true,title:'x'}}}).consent.enabled,false);
+ // On the studio host the mirror is under /demo/<id>/, so the results path is not anchored to the start.
+ assert.ok(new RegExp(previewConfig({siteConfig:{replace:{searchPath:'^/search'}}}).replace.searchPath).test('/demo/p1/search'));
+ assert.match(tag,/autocomplete:'\/autocomplete'|"autocomplete":"\/autocomplete"/);
+ assert.deepEqual(engineSuggestions([{id:'1',title:'א',url:'https://s/1',image:'https://s/1.jpg',price:5}],u=>'/demo/p1'+new URL(u).pathname),[{suggestion:'א',source:'products',id:'1',url:'/demo/p1/1',image:'https://s/1.jpg',price:5}]);
  clearEvents('p1');recordEvent('p1','search-to-cart',{document:{event_type:'checkout'}});recordEvent('p1','big',{blob:'x'.repeat(5000)});
  assert.equal(readEvents('p1')[0].body.document.event_type,'checkout');assert.equal(readEvents('p1')[1].body.truncated,true);
 });
@@ -157,6 +217,11 @@ test('operator settings layer over detection and survive a new detection',async(
  const again={...r,detectedConfig:structuredClone(r.siteConfig),settings:t.settings};applySettings(again,{});
  assert.deepEqual(again.siteConfig.selectors.productCard,['li.item']);assert.equal(again.siteConfig.replace.loader.text,'עוד רגע');
  applySettings(again,{reset:true});assert.deepEqual(again.siteConfig.selectors.productCard,r.siteConfig.selectors.productCard);
+ // The whole-area takeover and our suggestions can each be switched off and back on.
+ applySettings(again,{scope:'grid',autocomplete:false});assert.equal(again.siteConfig.replace.scope,'grid');assert.equal(again.siteConfig.features.autocomplete,false);
+ assert.equal(again.detectedConfig.replace.scope,'main');
+ applySettings(again,{scope:'main',autocomplete:true});assert.equal(again.siteConfig.replace.scope,'main');assert.equal(again.siteConfig.features.autocomplete,true);
+ assert.equal(mergeSiteConfig({autocomplete:{input:'#old',hide:['.stale']}},again.siteConfig).autocomplete.input,'#search');
  assert.throws(()=>applySettings(t,{overrides:{resultsGrid:'ul[[['}}),/סלקטור/);
  assert.throws(()=>applySettings(t,{loader:{color:'red'}}),/צבע/);
  assert.throws(()=>cleanTemplate('<li>{{name}}</li>'),/\{\{url\}\}/);

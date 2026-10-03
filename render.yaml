@@ -15,6 +15,12 @@ services:
         sync: false
       - key: STUDIO_DASHBOARD_MONGODB_URI
         sync: false
+      # Client Shopify apps open the studio here (install + daily product feed, core/shopify-feed.mjs).
+      - key: STUDIO_PUBLIC_URL
+        value: https://tenant-studio.onrender.com
+      # {"<project id>":{"clientId":"…","secret":"…"}} — from `shopify app env show` in the client app folder.
+      - key: STUDIO_SHOPIFY_APPS
+        sync: false
 
   - type: worker
     name: semantix-site-crawler
