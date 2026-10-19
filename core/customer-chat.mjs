@@ -13,10 +13,16 @@ export async function customerTenant(apiKey){
  try{await client.connect();const user=await client.db('users').collection('users').findOne({apiKey},{projection:{dbName:1}});if(!user?.dbName)throw fail('החנות אינה מחוברת',404);return {dbName:user.dbName};}finally{await client.close();}
 }
 export async function customerProject(store,dbName,env=process.env){
+ const project=await store.read(await customerProjectId(store,dbName,env));
+ return validateCustomerProject(project,dbName);
+}
+export async function customerProjectId(store,dbName,env=process.env){
  let configured={};try{configured=JSON.parse(env.STUDIO_CUSTOMER_PROJECTS||'{}');}catch{throw fail('מיפוי החנויות בסטודיו אינו תקין',503);}
  const candidates=configured[dbName]?[{id:configured[dbName]}]:(await store.metas()).filter(p=>p.dbName===dbName);
  if(candidates.length!==1)throw fail(candidates.length?'יש להשלים מיפוי חד־משמעי לחנות בסטודיו':'לחנות עדיין אין פרויקט מחובר בסטודיו',409);
- const project=await store.read(candidates[0].id);
+ return candidates[0].id;
+}
+function validateCustomerProject(project,dbName){
  if(project.existingClient?.dbName!==dbName)throw fail('פרויקט הסטודיו אינו שייך לחנות',403);
  if(!project.revisions?.length||!project.productCards?.length)throw fail('יש להשלים את קטלוג החנות בסטודיו',409);
  return project;
@@ -44,10 +50,9 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
  register('turn',async(req,res)=>{
   const {apiKey,message,history=[],analytics=null}=req.body||{};
   if(!text(message,3000)||!Array.isArray(history)||history.length>16||history.some(m=>!['user','assistant'].includes(m.role)||typeof m.text!=='string'||m.text.length>8000))throw fail('הודעה או היסטוריה לא תקינה');
-  const {dbName}=await resolveTenant(apiKey),project=await customerProject(store,dbName);
-  await locked(project.id,async()=>{
-   const current=await store.read(project.id);
-   if(current.existingClient?.dbName!==dbName)throw fail('הפרויקט אינו שייך לחנות',403);
+  const {dbName}=await resolveTenant(apiKey),projectId=await customerProjectId(store,dbName);
+  await locked(projectId,async()=>{
+   const current=validateCustomerProject(await store.read(projectId),dbName);
    const base=fingerprint(current),working={...current,messages:history.map(m=>({role:m.role,text:m.text}))},actions=[];
    let stopped=false;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10*60*1000);
    res.on('close',()=>{if(!res.writableEnded){stopped=true;controller.abort();}});

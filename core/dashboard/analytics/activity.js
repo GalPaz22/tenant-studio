@@ -1,5 +1,8 @@
 import { uniquePurchases } from "./conversion.js";
-const dayOf = (t) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(t));
+// ICU formatters allocate native memory outside V8's heap. Reuse one formatter
+// instead of allocating one for every shopper event in the reporting window.
+const dayFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem", year: "numeric", month: "2-digit", day: "2-digit" });
+const dayOf = (t) => dayFormatter.format(t);
 /**
  * Per-day counts per source. A search log that goes quiet while clicks keep
  * flowing is a logging gap (missing data), not a traffic drop; a day with many

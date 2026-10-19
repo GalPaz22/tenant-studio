@@ -7,6 +7,7 @@ import { classifyLeaks, METHODOLOGY, queryFunnel, rankQueries, storeFunnel, susp
 import { auditCandidates } from "./evidence.js";
 import { DAY_MS, loadStoreEvents } from "./events.js";
 import { measuredConversion } from "./measurement.js";
+import { reportGate } from './work-limit.js';
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
 /** Measurement problems that block or bias conversion analysis, in the merchant's language. */
 export function trackingIssues(ev, f, activity, experiments = [], synthetic = [], catalogMatchRate = null) {
@@ -101,6 +102,9 @@ const slim = (r) => ({
 });
 /** Deterministic conversion report for one store: no model calls, read-only on the tenant database. */
 export async function buildConversionReport(tenant, { days = 30, persist = true, now = new Date() } = {}) {
+    return reportGate.run(() => buildReport(tenant, { days, persist, now }));
+}
+async function buildReport(tenant, { days, persist, now }) {
     if (!Number.isInteger(days) || days < 1 || days > 90)
         throw new Error("days must be 1–90");
     const from = new Date(+now - days * DAY_MS);

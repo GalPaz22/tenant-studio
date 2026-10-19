@@ -114,6 +114,7 @@ export async function dashboardRoutes(app) {
         if (![7, 30, 90].includes(count))
             return reply.code(400).send({ error: "Invalid date range" });
         const key = `${t.dbName}:${count}`;
+        for (const [cacheKey, value] of cache) if (value.expires <= Date.now()) cache.delete(cacheKey);
         let entry = cache.get(key);
         if (!entry || entry.expires <= Date.now()) {
             for (const [k, v] of cache)
@@ -123,6 +124,8 @@ export async function dashboardRoutes(app) {
                 .then(([store, report]) => ({ store, report, chat: { engine: dashboardChatEngine() === 'studio' ? 'tenant-studio' : 'optimizer' } }))
                 .catch(error => { cache.delete(key); throw error; });
             entry = { expires: Date.now() + 60_000, result };
+            // Retain compact reports for only a few stores/ranges on small instances.
+            if (cache.size >= 4) cache.delete(cache.keys().next().value);
             cache.set(key, entry);
         }
         return entry.result;
