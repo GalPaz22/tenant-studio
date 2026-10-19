@@ -33,13 +33,15 @@ export function customerTools(project,actions,analytics){
 const POLICY=`This is the authenticated CUSTOMER dashboard, using the real Tenant Studio agent and this store's existing project. Questions are read-only. Tools may prepare reversible drafts only; NOTHING is live until the merchant approves the proposal in the dashboard. Never say a draft is applied or published. Prefer promote_products/hide_products/pin_products for explicit product merchandising so it stays consistent with the dashboard's manual controls. Use dashboard_analytics first for its measured window; missing rates are unavailable, not zero. Rates use identified sessions with a preceding search, not individual search events; sessions.all is measured sessions, not total store visits. No plugin editing, crawling, deployment, switching tenants or exposing credentials. Answer briefly in Hebrew, explaining any proposed changes and their verification. The caller supplies this conversation's history; other Studio conversations are private.`;
 
 export function installCustomerChat(app,{store,drafts,persist,locked,publish,model,judge,resolveTenant=customerTenant,services=()=>({}),agent=studioAgent}){
+ const operations={};
+ const register=(operation,fn)=>{operations[operation]=fn;app.post('/api/customer-chat/'+operation,route(fn));};
  const route=fn=>async(req,res,next)=>{try{await fn(req,res);}catch(error){if(res.headersSent){res.write(JSON.stringify({type:'error',message:error.message})+'\n');res.end();}else if(error.status)res.status(error.status).json({error:error.message});else next(error);}};
  app.use('/api/customer-chat',(req,res,next)=>{
   const secret=process.env.STUDIO_CUSTOMER_API_TOKEN||'',provided=req.get('X-Studio-Customer-Token')||'';
   if(!secret||!provided||!timingSafeEqual(createHash('sha256').update(secret).digest(),createHash('sha256').update(provided).digest()))return res.status(401).json({error:'Unauthorized'});
   next();
  });
- app.post('/api/customer-chat/turn',route(async(req,res)=>{
+ register('turn',async(req,res)=>{
   const {apiKey,message,history=[],analytics=null}=req.body||{};
   if(!text(message,3000)||!Array.isArray(history)||history.length>16||history.some(m=>!['user','assistant'].includes(m.role)||typeof m.text!=='string'||m.text.length>8000))throw fail('הודעה או היסטוריה לא תקינה');
   const {dbName}=await resolveTenant(apiKey),project=await customerProject(store,dbName);
@@ -72,8 +74,8 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
    }catch(error){send({type:'error',message:error.stopped?'הריצה נעצרה':error.message});}
    finally{clearTimeout(timer);if(!res.writableEnded)res.end();}
   });
- }));
- app.post('/api/customer-chat/approve',route(async(req,res)=>{
+ });
+ register('approve',async(req,res)=>{
   const {apiKey,draftId}=req.body||{};if(typeof draftId!=='string'||!/^[a-f0-9-]{36}$/.test(draftId))throw fail('טיוטה לא תקינה');
   const {dbName}=await resolveTenant(apiKey);let draft;try{draft=await drafts.read(draftId);}catch(error){if(error.code==='ENOENT')throw fail('הטיוטה לא נמצאה',404);throw error;}
   if(draft.dbName!==dbName)throw fail('הטיוטה לא נמצאה בחנות',404);
@@ -90,7 +92,8 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
    try{if(approved.dashboardExport?.slug){await publish(approved,approved.dashboardExport.slug);published=true;}}catch{ /* A saved revision is not falsely reported as published. */ }
    res.json({saved:true,published,version:approved.revisions.at(-1)?.number});
   });
- }));
+ });
  // Keep unknown customer routes behind this authentication boundary.
  app.use('/api/customer-chat',(_req,res)=>res.status(404).json({error:'Not found'}));
+ return operations;
 }

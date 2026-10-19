@@ -1,0 +1,123 @@
+import { ObjectId } from "mongodb";
+import { controlDb } from "../../core/db.js";
+import { getRedis } from "../../core/db.js";
+import { createExperiment, transition } from "../../engine/experiments.js";
+import { getTenantByApiKey } from "../../core/tenant.js";
+import { RuleInput } from "../../core/types.js";
+import { applyCatalogFilterChange } from "../../catalog/filters.js";
+import { createRule } from "../../rules/engine.js";
+import { applyProductChange } from "../../optimization/boosts.js";
+import { studioRequest } from '../../agent/studio-client.js';
+export async function proposalRoutes(app) {
+    app.get("/proposals", async (req) => {
+        const { status = "pending", tenant } = req.query;
+        const db = await controlDb();
+        const q = { status };
+        // A store can hold several keys; proposals carry the store's dbName.
+        if (tenant) {
+            const t = await getTenantByApiKey(tenant);
+            if (t)
+                q.$or = [{ tenantApiKey: tenant }, { dbName: t.dbName }, { "draftExperiment.dbName": t.dbName }];
+            else
+                q.tenantApiKey = tenant;
+        }
+        return db.collection("proposals").find(q).sort({ createdAt: -1 }).limit(100).toArray();
+    });
+    app.post("/proposals/:id/approve", async (req, reply) => {
+        const { id } = req.params;
+        const { by, start } = (req.body ?? {});
+        const db = await controlDb();
+        const proposal = (await db
+            .collection("proposals")
+            .findOne({ _id: new ObjectId(id), status: "pending" }));
+        if (!proposal)
+            return reply.code(404).send({ error: "pending proposal not found" });
+        if (proposal.kind === 'studioRevision') {
+            const lock = await db.collection('proposals').updateOne({ _id: proposal._id, status: 'pending' }, { $set: { status: 'applying' } });
+            if (lock.modifiedCount !== 1)
+                return reply.code(409).send({ error: 'proposal was already reviewed' });
+            try {
+                const response = await studioRequest('approve', { apiKey: proposal.tenantApiKey, draftId: proposal.studioDraftId }, AbortSignal.timeout(120000));
+                const data = await response.json();
+                if (data.saved !== true)
+                    throw Error('הסטודיו לא אישר שמירה');
+                await db.collection('proposals').updateOne({ _id: proposal._id }, { $set: { status: 'approved', published: data.published === true, reviewedAt: new Date(), reviewedBy: by } });
+                return data;
+            }
+            catch (error) {
+                await db.collection('proposals').updateOne({ _id: proposal._id, status: 'applying' }, { $set: { status: 'pending', applyError: error.message } });
+                return reply.code(409).send({ error: error.message });
+            }
+        }
+        if (["productBoost", "productVisibility"].includes(proposal.kind)) {
+            const lock = await db.collection("proposals").updateOne({ _id: new ObjectId(id), status: "pending" }, { $set: { status: "applying" } });
+            if (lock.modifiedCount !== 1)
+                return reply.code(409).send({ error: "proposal was already reviewed" });
+            try {
+                return await applyProductChange(proposal, by);
+            }
+            catch (e) {
+                await db.collection("proposals").updateOne({ _id: new ObjectId(id), status: "applying" }, { $set: { status: "pending", applyError: e.message } });
+                return reply.code(409).send({ error: e.message });
+            }
+        }
+        // Permanent rule: approval activates it for every matching search (published to Redis).
+        if (proposal.kind === "rule") {
+            const lock = await db.collection("proposals").updateOne({ _id: new ObjectId(id), status: "pending" }, { $set: { status: "approved", reviewedBy: by, reviewedAt: new Date() } });
+            if (lock.modifiedCount !== 1)
+                return reply.code(409).send({ error: "proposal was already reviewed" });
+            try {
+                const rule = await createRule(RuleInput.parse(proposal.draftRule));
+                let published = false;
+                try {
+                    const redis = await getRedis(), payload = redis ? await redis.get(`rules:active:${proposal.tenantApiKey}`) : null;
+                    published = !!payload && JSON.parse(payload).some(item => item.id === String(rule._id));
+                } catch {}
+                await db.collection("proposals").updateOne({ _id: new ObjectId(id) }, { $set: { ruleId: String(rule._id), published } });
+                return { ...rule, saved: true, published };
+            }
+            catch (e) {
+                await db.collection("proposals").updateOne({ _id: new ObjectId(id), status: "approved" }, { $set: { status: "pending", applyError: e.message } });
+                return reply.code(409).send({ error: e.message });
+            }
+        }
+        if (proposal.kind === "catalogFilter") {
+            const lock = await db.collection("proposals").updateOne({ _id: new ObjectId(id), status: "pending" }, { $set: { status: "applying", reviewedBy: by, reviewedAt: new Date() } });
+            if (lock.modifiedCount !== 1)
+                return reply.code(409).send({ error: "proposal is already being applied" });
+            try {
+                const result = await applyCatalogFilterChange({
+                    proposalId: id,
+                    tenantApiKey: proposal.tenantApiKey,
+                    dbName: proposal.dbName,
+                    change: proposal.catalogChange,
+                    by,
+                });
+                return result;
+            }
+            catch (e) {
+                await db.collection("proposals").updateOne({ _id: new ObjectId(id), status: "applying" }, { $set: { status: "pending", applyError: e.message } });
+                return reply.code(409).send({ error: e.message });
+            }
+        }
+        const exp = await createExperiment({ ...proposal.draftExperiment, proposalId: id }, "approved");
+        await db
+            .collection("proposals")
+            .updateOne({ _id: new ObjectId(id) }, { $set: { status: "approved", reviewedBy: by, reviewedAt: new Date() } });
+        // approve-and-start in one click from the UI
+        if (start)
+            return transition(String(exp._id), "running", by, "started on proposal approval");
+        return exp;
+    });
+    app.post("/proposals/:id/reject", async (req, reply) => {
+        const { id } = req.params;
+        const { by, note } = (req.body ?? {});
+        const db = await controlDb();
+        const res = await db
+            .collection("proposals")
+            .updateOne({ _id: new ObjectId(id), status: "pending" }, { $set: { status: "rejected", reviewerNotes: note, reviewedBy: by, reviewedAt: new Date() } });
+        if (res.matchedCount === 0)
+            return reply.code(404).send({ error: "pending proposal not found" });
+        return { ok: true };
+    });
+}

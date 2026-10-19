@@ -13,6 +13,10 @@ services:
         value: "true"
       - key: STUDIO_CUSTOMER_API_TOKEN
         sync: false
+      # Optional for immediate search-cache invalidation and existing exact-rule publication.
+      # Use the same Redis as the live search engine.
+      - key: REDIS_URL
+        sync: false
       - key: STUDIO_CUSTOMER_PROJECTS
         value: '{}'
       - key: MONGODB_URI
