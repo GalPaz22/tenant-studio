@@ -2,6 +2,7 @@ import {refreshClientProfile} from './core/client-brain.mjs';
 import {reviewSearchPerformance,proposalRequest} from './core/search-performance.mjs';
 import {workspaceAgent} from './core/workspace-agent.mjs';
 import {installCustomerChat} from './core/customer-chat.mjs';
+import {createCustomerProjectRecovery,saveCustomerProject} from './core/customer-project.mjs';
 import {installCustomerDashboard} from './core/customer-dashboard.mjs';
 import {studioAgent,tools as studioTools,createStudioSearch} from './core/studio-agent.mjs';
 import {auditSearches} from './core/search-audit.mjs';
@@ -71,6 +72,8 @@ const locks=new Set(),runtimes=new Map();let active=0;
 const port=Number(process.env.PORT||process.env.STUDIO_PORT||4320),token=randomUUID();
 const allowRemote=process.env.ALLOW_REMOTE==='true'||!!process.env.RENDER||process.env.NODE_ENV==='production';
 const app=express();
+// Liveness only: safe for hosting probes; authenticated dashboard health checks Mongo separately.
+app.get('/healthz',(_req,res)=>res.json({ok:true,service:'tenant-studio',revision:process.env.RENDER_GIT_COMMIT||null,customerProjectRecovery:true}));
 app.use('/api/customer-chat',express.json({limit:'256kb'}));
 app.use('/api/customer-dashboard',express.json({limit:'256kb'}));
 app.use('/api/projects/:id/plugin/import',express.json({limit:'12mb'}));
@@ -244,7 +247,7 @@ app.get('/shopify/:id/callback',route(async(req,res)=>{
  }catch(e){res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});return toAdmin(req,res,r,e.message);}
  res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});toAdmin(req,res,r);
 }));
-const customerChatOperations=installCustomerChat(app,{store,drafts:createStore(resolve(dataDir,'customer-chat-drafts')),persist,locked,publish:publishModule,model:()=>app.locals.studioAgent||askStudioAgent,judge:()=>app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent,services:()=>app.locals.studioServices||{}});
+const customerChatOperations=installCustomerChat(app,{store,drafts:createStore(resolve(dataDir,'customer-chat-drafts')),persist:async p=>{await saveCustomerProject(p);return persist(p);},recoverProject:createCustomerProjectRecovery(store),locked,publish:publishModule,model:()=>app.locals.studioAgent||askStudioAgent,judge:()=>app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent,services:()=>app.locals.studioServices||{}});
 await installCustomerDashboard(app,{operations:customerChatOperations});
 app.get('/api/session',(_req,res)=>res.json({token}));
 app.use('/api', (req,res,next)=>{

@@ -23,7 +23,13 @@ in process, using the real `studioAgent` and customer project. The original
 
 Use `STUDIO_DASHBOARD_MONGODB_URI` or `MONGODB_URI` for the shared production data.
 Analytics and saved conversations work without a local Studio project. Management
-chat needs the existing customer project restored on persistent `STUDIO_DATA_DIR`.
+chat restores a scoped checkpoint from `<tenant>.studio_customer_project` when its
+local project is missing. If no checkpoint exists, it opens the real saved customer
+catalog automatically (bounded to 50,000 products / 24 MiB of source data). This
+connection does not publish changes. Approved customer revisions are checkpointed
+before saving locally. Checkpoints exclude private operator chats and plugin/crawl
+workspaces. Persistent `STUDIO_DATA_DIR` is still recommended for operator projects
+and pending chat drafts.
 When multiple projects share a store, configure `STUDIO_CUSTOMER_PROJECTS` with
 an explicit mapping; the project's actual database ownership is still checked.
 Use the live search engine's shared `REDIS_URL` for immediate cache clearing and

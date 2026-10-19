@@ -1,5 +1,5 @@
 import {createHash,randomUUID,timingSafeEqual} from 'node:crypto';
-import {MongoClient} from 'mongodb';
+import {getMongo} from './dashboard/core/db.js';
 import {studioAgent,tools} from './studio-agent.mjs';
 
 const fail=(message,status=400)=>Object.assign(Error(message),{status});
@@ -9,16 +9,18 @@ const text=(v,max=200)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
 
 export async function customerTenant(apiKey){
  if(!text(apiKey,300))throw fail('נדרשת חנות מחוברת',401);
- const client=new MongoClient(process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI,{serverSelectionTimeoutMS:8000});
- try{await client.connect();const user=await client.db('users').collection('users').findOne({apiKey},{projection:{dbName:1}});if(!user?.dbName)throw fail('החנות אינה מחוברת',404);return {dbName:user.dbName};}finally{await client.close();}
+ const client=await getMongo();
+ const user=await client.db('users').collection('users').findOne({apiKey},{projection:{dbName:1}});
+ if(!user?.dbName)throw fail('החנות אינה מחוברת',404);return {dbName:user.dbName};
 }
 export async function customerProject(store,dbName,env=process.env){
  const project=await store.read(await customerProjectId(store,dbName,env));
  return validateCustomerProject(project,dbName);
 }
-export async function customerProjectId(store,dbName,env=process.env){
+export async function customerProjectId(store,dbName,env=process.env,recover=null){
  let configured={};try{configured=JSON.parse(env.STUDIO_CUSTOMER_PROJECTS||'{}');}catch{throw fail('מיפוי החנויות בסטודיו אינו תקין',503);}
  const candidates=configured[dbName]?[{id:configured[dbName]}]:(await store.metas()).filter(p=>p.dbName===dbName);
+ if(!candidates.length&&!configured[dbName]&&recover)return recover(dbName);
  if(candidates.length!==1)throw fail(candidates.length?'יש להשלים מיפוי חד־משמעי לחנות בסטודיו':'לחנות עדיין אין פרויקט מחובר בסטודיו',409);
  return candidates[0].id;
 }
@@ -38,7 +40,7 @@ export function customerTools(project,actions,analytics){
 }
 const POLICY=`This is the authenticated CUSTOMER dashboard, using the real Tenant Studio agent and this store's existing project. Questions are read-only. Tools may prepare reversible drafts only; NOTHING is live until the merchant approves the proposal in the dashboard. Never say a draft is applied or published. Prefer promote_products/hide_products/pin_products for explicit product merchandising so it stays consistent with the dashboard's manual controls. Use dashboard_analytics first for its measured window; missing rates are unavailable, not zero. Rates use identified sessions with a preceding search, not individual search events; sessions.all is measured sessions, not total store visits. No plugin editing, crawling, deployment, switching tenants or exposing credentials. Answer briefly in Hebrew, explaining any proposed changes and their verification. The caller supplies this conversation's history; other Studio conversations are private.`;
 
-export function installCustomerChat(app,{store,drafts,persist,locked,publish,model,judge,resolveTenant=customerTenant,services=()=>({}),agent=studioAgent}){
+export function installCustomerChat(app,{store,drafts,persist,locked,publish,model,judge,resolveTenant=customerTenant,recoverProject=null,services=()=>({}),agent=studioAgent}){
  const operations={};
  const register=(operation,fn)=>{operations[operation]=fn;app.post('/api/customer-chat/'+operation,route(fn));};
  const route=fn=>async(req,res,next)=>{try{await fn(req,res);}catch(error){if(res.headersSent){res.write(JSON.stringify({type:'error',message:error.message})+'\n');res.end();}else if(error.status)res.status(error.status).json({error:error.message});else next(error);}};
@@ -50,7 +52,7 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
  register('turn',async(req,res)=>{
   const {apiKey,message,history=[],analytics=null}=req.body||{};
   if(!text(message,3000)||!Array.isArray(history)||history.length>16||history.some(m=>!['user','assistant'].includes(m.role)||typeof m.text!=='string'||m.text.length>8000))throw fail('הודעה או היסטוריה לא תקינה');
-  const {dbName}=await resolveTenant(apiKey),projectId=await customerProjectId(store,dbName);
+  const {dbName}=await resolveTenant(apiKey),projectId=await customerProjectId(store,dbName,process.env,recoverProject);
   await locked(projectId,async()=>{
    const current=validateCustomerProject(await store.read(projectId),dbName);
    const base=fingerprint(current),working={...current,messages:history.map(m=>({role:m.role,text:m.text}))},actions=[];
