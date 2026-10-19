@@ -31,6 +31,9 @@ test('rewriteQuery and rerank shape a search; results report the function',async
  const r=await rt(carmella(hooks,{map:{'מנציני':'mancini'}})).search({query:'מנציני',limit:20});
  assert.deepEqual(r.matches.map(m=>m.id.split(':').pop()).sort(),['m1','m2']);assert.deepEqual(r.metadata.functions,['rerank']);
  const f=await rt(carmella({rerank:hooks.rerank})).search({query:'פסטה',limit:20});assert.ok(!f.matches.some(m=>m.id.endsWith('s1')),'rerank can drop');
+ // The rewritten query is the one retrieved: a word the catalog never uses finds the product it was rewritten to.
+ const w=await rt(carmella({rewriteQuery:hooks.rewriteQuery},{map:{'צינורות':'ריגטוני'}})).search({query:'צינורות',limit:20});
+ assert.deepEqual(w.matches.map(m=>m.id.split(':').pop()),['m2']);assert.equal(w.metadata.phase,'lexical');
 });
 test('isolation: escape routes are rejected, and a runaway or crashing function never breaks the search',async()=>{
  for(const [code,why] of [

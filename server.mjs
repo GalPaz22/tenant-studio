@@ -1,6 +1,7 @@
 import {refreshClientProfile} from './core/client-brain.mjs';
 import {reviewSearchPerformance,proposalRequest} from './core/search-performance.mjs';
 import {workspaceAgent} from './core/workspace-agent.mjs';
+import {installCustomerChat} from './core/customer-chat.mjs';
 import {studioAgent,tools as studioTools,createStudioSearch} from './core/studio-agent.mjs';
 import {auditSearches} from './core/search-audit.mjs';
 import {readProductionSignals,buildBaseline,evaluateBaseline,applyPopularity,baselineRegressions} from './core/baseline.mjs';
@@ -69,6 +70,7 @@ const locks=new Set(),runtimes=new Map();let active=0;
 const port=Number(process.env.PORT||process.env.STUDIO_PORT||4320),token=randomUUID();
 const allowRemote=process.env.ALLOW_REMOTE==='true'||!!process.env.RENDER||process.env.NODE_ENV==='production';
 const app=express();
+app.use('/api/customer-chat',express.json({limit:'256kb'}));
 app.use('/api/projects/:id/plugin/import',express.json({limit:'12mb'}));
 app.use('/api/projects/:id/plugin/edit',express.json({limit:'2mb'}));
 app.use('/api/projects/:id/takeover/settings',express.json({limit:'256kb'}));
@@ -240,6 +242,7 @@ app.get('/shopify/:id/callback',route(async(req,res)=>{
  }catch(e){res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});return toAdmin(req,res,r,e.message);}
  res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});toAdmin(req,res,r);
 }));
+installCustomerChat(app,{store,drafts:createStore(resolve(dataDir,'customer-chat-drafts')),persist,locked,publish:publishModule,model:()=>app.locals.studioAgent||askStudioAgent,judge:()=>app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent,services:()=>app.locals.studioServices||{}});
 app.get('/api/session',(_req,res)=>res.json({token}));
 app.use('/api', (req,res,next)=>{
  if(req.method==='POST'&&/^\/projects\/[a-f0-9-]{36}\/sync\/event$/.test(req.path)&&!req.get('X-Studio-Token')){

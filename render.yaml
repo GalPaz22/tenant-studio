@@ -11,6 +11,10 @@ services:
         value: "22"
       - key: ALLOW_REMOTE
         value: "true"
+      - key: STUDIO_CUSTOMER_API_TOKEN
+        sync: false
+      - key: STUDIO_CUSTOMER_PROJECTS
+        value: '{}'
       - key: MONGODB_URI
         sync: false
       - key: STUDIO_DASHBOARD_MONGODB_URI
