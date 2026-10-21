@@ -21,6 +21,7 @@ export const ExperimentStatus = z.enum([
 // Shapes by experiment type — a patch may combine keys when types compose.
 export const ArmPatch = z
     .object({
+    excludedProductIds: z.array(z.string().min(1).max(150)).max(100).optional(),
     productBoosts: z.record(z.string(), z.number().int().min(0).max(3)).optional(),
     pinnedResults: z
         .array(z.object({

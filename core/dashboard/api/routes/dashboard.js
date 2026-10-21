@@ -1,3 +1,4 @@
+import {readSearchLayout,saveSearchLayout} from '../../merchandising/search-layout.js';
 import { getDashboardReport, invalidateMeasuredReports } from "../../analytics/report-cache.js";
 import { liveSearch } from "../../analytics/live-search.js";
 import { getTenantByApiKey, storeProfile } from "../../core/tenant.js";
@@ -34,22 +35,14 @@ export async function dashboardRoutes(app) {
         if (typeof query !== "string" || !query.trim() || query.length > 200)
             return reply.code(400).send({ error: "Invalid query" });
         try {
-            const term = query.trim().replace(/\s+/g, " ").toLowerCase();
-            const [products, rule] = await Promise.all([
-                liveSearch(t, query),
-                (await controlDb()).collection("rules").findOne({ dbName: t.dbName, merchantQuery: term }),
-            ]);
-            const pins = (rule?.patch?.pinnedResults?.[0]?.productIds ?? []).map(String);
-            const pinnedProducts = pins.length ? await (await tenantDb(t.dbName)).collection("products").find({
-                id: { $in: pins.flatMap(id => Number.isFinite(Number(id)) ? [id, Number(id)] : [id]) },
-            }).project({ id: 1, name: 1, price: 1, image: 1, images: 1, category: 1, hidden: 1 }).toArray() : [];
-            return { products, query: query.trim(), pins, pinnedProducts, pinStatus: rule?.status ?? null, pinRevision: rule?.updatedAt?.toISOString?.() ?? null };
+            return readSearchLayout(t,query,await liveSearch(t,query));
         }
         catch (e) {
             const status = /returned \d+/.exec(e.message);
             return reply.code(502).send({ error: status ? e.message : "מנוע החיפוש אינו זמין כרגע" });
         }
     });
+    app.put('/dashboard/search-layout', async (req,reply)=>{const store=await getTenantByApiKey(req.query.tenant);if(!store)return reply.code(400).send({error:'יש לבחור חנות'});try{const result=await saveSearchLayout(store,req.body);invalidateDashboardReports(store.dbName);return result;}catch(error){return reply.code(error.status||500).send({error:error.message});}});
     // One merchant-managed pin rule per exact query; agent-authored rules stay independent.
     app.put("/dashboard/pins", async (req, reply) => {
         const { tenant } = req.query;
