@@ -16,11 +16,29 @@ export function productUrl(value) {
   } catch { return null; }
 }
 
+// A catalog whose source has no categories (Rikushet's JSON-LD) still names the kind of product in its titles, at
+// their head: the type whose name or shopper alias opens the title, as whole words, after any Latin brand/model words
+// or a leading "סט" ("Deuter Dreamlite 500 שק שינה", "סט מזוודות"). "מנעול קוד למזוודה" is a lock and "משקל מזוודות"
+// none of the types; the longest alias wins ("תג מזוודה" over "מזוודה"). Used only when the product has no categories.
+export function typeFromTitle(title, productTypes = {}) {
+  // Punctuation (| - ׳ ') separates words on both sides, so "מוצ׳ילה" in a title meets the alias "מוצ'ילה".
+  const clean = s => normalize(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const words = clean(title).split(' ');
+  while (words.length && (/^[\p{Script=Latin}\p{N}]+$/u.test(words[0]) || words[0] === 'סט')) words.shift();
+  const head = ` ${words.join(' ')} `;
+  let best = null;
+  for (const [type, rule] of Object.entries(productTypes))
+    for (const alias of [type, ...(rule.queryAliases || [])].map(clean).filter(Boolean))
+      if (head.startsWith(` ${alias} `) && (!best || alias.length > best.alias.length)) best = {type, alias};
+  return best?.type || null;
+}
+
 export function processProduct(raw, client, observations = [], observedAt = null) {
   const categories = list(raw.categories), tags = list(raw.tags);
   const badgeCandidates = Object.entries(client.badgeCandidates).flatMap(([field, values]) =>
     list(raw[field]).filter(v => values.includes(v)).map(text => ({text, sourceField: field, status: 'needs-verification'})));
-  const types = Object.entries(client.productTypes).filter(([, rule]) => rule.categories.some(c => categories.includes(c)));
+  let types = Object.entries(client.productTypes).filter(([, rule]) => rule.categories.some(c => categories.includes(c))), typeSource = 'categories';
+  if (!categories.length) { const t = typeFromTitle(raw.name || raw.title, client.productTypes); if (t) { types = [[t]]; typeSource = 'title'; } }
   const colors = Object.entries(client.colors).filter(([color, cats]) =>
     list(raw.colors).includes(color) || cats.some(c => categories.includes(c))).map(([color]) => color);
   const finishes = Object.entries(client.finishes || {}).filter(([, rule]) => rule.categories.some(c => categories.includes(c))).map(([key]) => key);
@@ -52,7 +70,7 @@ export function processProduct(raw, client, observations = [], observedAt = null
     hidden: raw.hidden === true || !client.publishedStatuses.includes(raw.status),
     productType: types.length === 1 ? types[0][0] : null, colors, finishes, categories, tags,
     badges, badgeCandidates, issues,
-    provenance: {productType: 'categories', colors: ['categories', 'colors'], finishes: 'categories', fetchedAt: raw.fetchedAt || null},
+    provenance: {productType: typeSource, colors: ['categories', 'colors'], finishes: 'categories', fetchedAt: raw.fetchedAt || null},
   };
 }
 

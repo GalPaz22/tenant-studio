@@ -152,8 +152,10 @@ export function createNativeSearch({concurrency=2,perMinute=12,now=Date.now}={})
   const learn=g=>{if(!g||g.cards.length<2)return false;if(learned.confirmed&&g.sig!==learned.sig)return false;learned.sig=g.sig;learned.card=g.card;if(g.cards.length>=5)learned.pageSize=Math.max(learned.pageSize||0,g.cards.length);memory.set(key,learned);return true;};
   let original=analyze(text,type,lookup,learned),og=pick(groupsOf(original,lookup,learned),learned);
   learn(og);
-  // A fragment/JSON answer with no product cards (e.g. a suggestions-only section) is not ours to fill.
-  if(!og&&!(original.kind==='html'&&/<html[\s>]/i.test(text)))return null;
+  // A fragment/JSON answer with no product cards is ours to fill only on an endpoint already seen answering with
+  // products (Magento's autocomplete says "no results" as an empty product list); a suggestions-only section is not.
+  // An unknown JSON endpoint gets one chance to show product cards through harvesting; one that never does is left alone.
+  if(!og&&!(original.kind==='html'&&/<html[\s>]/i.test(text))&&!learned.sig&&(original.kind!=='json'||learned.barren))return null;
   // A sparse original (2 hits) says nothing about page size: use what this endpoint showed before, or a default.
   const fallback=original.kind==='html'&&/<html[\s>]/i.test(text)?24:6;
   const pageSize=learned.pageSize||(og&&og.cards.length>=fallback?og.cards.length:fallback),page=pageOf(target),offset=(page-1)*pageSize;
@@ -168,13 +170,14 @@ export function createNativeSearch({concurrency=2,perMinute=12,now=Date.now}={})
 
   if(og&&learned.confirmed)remember(cardsSeen,groupsOf(original,lookup,learned).filter(g=>g.sig===learned.sig));
   // Each result's native card: already seen on this endpoint, else harvested from it (within the request budget).
+  let tried=false;
   const harvest=async p=>{
    if(cardsSeen.has(p.id))return cardsSeen.get(p.id);
    // The key kind that last found a card on this endpoint goes first (a site that cannot search SKUs finds titles).
    const keys=searchKeys(p).sort((a,b)=>(b.kind===learned.keyKind)-(a.kind===learned.keyKind)).slice(0,2);
    for(const {kind,value:k} of keys){
     if(!allow(project.id))return null;
-    const t=await fetchText(withQuery(url,param.name,k));if(!t)continue;
+    const t=await fetchText(withQuery(url,param.name,k));tried=true;if(!t)continue;
     // Until a hit confirms the results list, a harvested page is read without the guessed shape.
     const shape=learned.confirmed?learned:{},a=analyze(t.text,t.type,lookup,shape),groups=groupsOf(a,lookup,shape);
     // HTML: the first list holding it (a widget comes later); JSON: the deepest node (an outer wrapper holds it too).
@@ -183,7 +186,7 @@ export function createNativeSearch({concurrency=2,perMinute=12,now=Date.now}={})
     if(hit&&!learned.confirmed){Object.assign(learned,{sig:hit.g.sig,card:hit.g.card,confirmed:true});if(hit.g.cards.length>=5)learned.pageSize=Math.max(learned.pageSize||0,hit.g.cards.length);
      remember(cardsSeen,groupsOf(analyze(text,type,lookup,{}),lookup,{}).filter(g=>g.sig===learned.sig));} // the original's own cards, now known to be results
     remember(cardsSeen,groups.filter(g=>learned.confirmed&&g.sig===learned.sig));
-    if(hit){learned.keyKind=kind;memory.set(key,learned);return {card:hit.c,group:hit.g,analysis:a,query:k};}
+    if(hit){learned.keyKind=kind;if(hit.g.sig===learned.sig)learned.sample={text:t.text,type:t.type,query:k};memory.set(key,learned);return {card:hit.c,group:hit.g,analysis:a,query:k};}
    }
    return null;
   };
@@ -191,24 +194,32 @@ export function createNativeSearch({concurrency=2,perMinute=12,now=Date.now}={})
   const harvested=[];while(!learned.confirmed&&harvested.length<results.length)harvested.push(await harvest(results[harvested.length]).catch(()=>null));
   harvested.push(...await pool(results.slice(harvested.length),harvest));
   const good=harvested.filter(Boolean),fetched=good.filter(h=>h.analysis); // fetched ones carry a whole response usable as structure
+  if(!og&&original.kind==='json'&&!learned.confirmed&&tried&&!good.length){learned.barren=true;memory.set(key,learned);}
   if(!og&&fetched.length&&!learned.sig){learned.sig=fetched[0].group.sig;learned.card=fetched[0].group.card;memory.set(key,learned);}
 
   // Structure: the original response, or (no original results) the response of our first harvested card.
   let base=original,group=og,echo=null;
-  if(!group||learned.sig&&group.sig!==learned.sig){const h=fetched[0];if(!h)return results.length?null:text;base=h.analysis;group=h.group;echo=h.query;}
+  if(learned.confirmed&&group&&group.sig===learned.sig)learned.sample={text,type,query:param.value};
+  // No results list here: borrow the structure of a harvested answer, or of the last answer of this endpoint that had one.
+  if(!group||learned.sig&&group.sig!==learned.sig){const h=fetched[0];
+   if(h){base=h.analysis;group=h.group;echo=h.query;}
+   else{const sample=learned.sample,a=sample&&analyze(sample.text,sample.type,lookup,learned),g=a&&pick(groupsOf(a,lookup,learned),learned);if(!g)return results.length?null:text;base=a;group=g;echo=sample.query;}}
   const template=good[0]?.card||group.cards[0];
   const cards=results.map((p,i)=>harvested[i]?.card||(template&&{key:p.id,product:p,value:typeof template.value==='string'?transplant(template.value,template.product,p):template.value,html:template.html&&transplant(template.html,template.product,p)})).filter(Boolean);
   const counts={total,shown:cards.length,originalShown:group.cards.length};
 
   if(base.kind==='json'){
    const {node,parent}=group,keys=cards.map(c=>c.key);
-   if(Array.isArray(node))node.splice(0,node.length,...cards.map(c=>c.value));
-   else{for(const c of group.cards)delete node[c.key];for(const c of cards)node[c.key]=c.value;}
+   // Cards go in as placeholders so the query echo below never rewrites a product's own text ("Book" in a title).
+   const mark=i=>'@@semantix-card-'+i+'@@';
+   if(Array.isArray(node))node.splice(0,node.length,...cards.map((c,i)=>mark(i)));
+   else{for(const c of group.cards)delete node[c.key];cards.forEach((c,i)=>{node[c.key]=mark(i);});}
    if(parent&&!Array.isArray(parent))for(const [k,v] of Object.entries(parent)){
     if(Array.isArray(v)&&v!==node&&v.length&&v.every(x=>group.cards.some(c=>String(c.key)===String(x))))parent[k]=keys.map(x=>typeof v[0]==='number'&&/^\d+$/.test(x)?Number(x):x);
     else if(typeof v==='number'&&/^(size|count|total|total_count|totalCount)$/i.test(k))parent[k]=total;
    }
-   let out=JSON.stringify(base.root);if(echo)out=replaceEcho(out,echo,param.value);return out;
+   let out=JSON.stringify(base.root);if(echo)out=replaceEcho(out,echo,param.value);
+   return out.replace(/"@@semantix-card-(\d+)@@"/g,(_,i)=>JSON.stringify(cards[i].value));
   }
   let before=base.text.slice(0,group.start),after=base.text.slice(group.end+1);
   if(echo){before=replaceEcho(before,echo,param.value);after=replaceEcho(after,echo,param.value);}

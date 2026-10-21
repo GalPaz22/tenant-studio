@@ -93,3 +93,16 @@ test('a site that cannot search SKUs (slug = SKU in lower case) is harvested by 
  assert.deepEqual([...out.matchAll(/class="brand">([^<]+)/g)].map(m=>m[1]),['Brand f','Brand e','Brand g'],'each card is the site\'s own, not a transplanted template');
  assert.deepEqual(asked,['CH1_050','Pack f'],'after one title hit no SKU search is wasted');
 });
+
+test('autocomplete JSON: once the endpoint is known, the site\'s empty "no results" answer is filled with semantix results',async()=>{
+ const native=createNativeSearch(),url=q=>origin+'/search/ajax/autocomplete?q='+encodeURIComponent(q);
+ const id=x=>300+x.charCodeAt(0),json=(xs,ok=true)=>JSON.stringify({success:ok,data:[{code:'product',size:xs.length,order:xs.map(id),data:Object.fromEntries(xs.map(x=>[String(id(x)),card(x,'5'+x.charCodeAt(0))]))}]});
+ let fetches=0;const fetchText=async href=>{fetches++;const q=new URL(href).searchParams.get('q');const p=catalog.find(p=>p.sku===q);return {type:'application/json',text:json(p?[p.url.slice(-5,-4)]:[])};};
+ const args={project:{id:'p7'},lookup,fetchText,type:'application/json'};
+ // A query the site answers with products teaches the endpoint (b's card is harvested by SKU, a's is reused).
+ await native.render({...args,url:url('book'),text:json(['a','c']),search:async()=>({matches:[catalog[1],catalog[0]],total:2})});
+ fetches=0;
+ const out=JSON.parse(await native.render({...args,url:url('ספר טוב'),text:json([],false),search:async()=>({matches:[catalog[0],catalog[1]],total:2})}));
+ assert.equal(out.data[0].order.length,2);assert.match(Object.values(out.data[0].data).join(''),/Book a[\s\S]*Book b|Book b[\s\S]*Book a/);
+ assert.equal(fetches,0,'cards already seen and the structure from the last answer: no request to the site');
+});
