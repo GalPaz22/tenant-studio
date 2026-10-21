@@ -35,7 +35,7 @@ function memoryStore(proposal){
 }
 const pendingProposal=()=>({...proposalFromPlan(plan(),analyzeWeek(events(),docs)),_id:new ObjectId(),dbName:'owned',tenantApiKey:'key',kind:'weeklyOptimization',status:'pending',expiresAt:new Date(Date.now()+DAY)});
 test('approve/test/promote/stop are scoped atomic transitions, with separate direct and randomized measurement histories',async()=>{
- const p=pendingProposal(),f=memoryStore(p),store={dbName:'owned',apiKey:'key'},opts={verify:async()=>{}};configureDashboardStorage({mongo:f.client,redis:null});
+ const p=pendingProposal(),f=memoryStore(p),store={dbName:'owned',apiKey:'key'},opts={verify:async()=>{},publish:async()=>({experimentIds:f.data.experiments.filter(e=>e.status==='running').map(e=>String(e._id))})};configureDashboardStorage({mongo:f.client,redis:null});
  try{
   await assert.rejects(reviewProposal({dbName:'foreign',apiKey:'other'},String(p._id),'test','actor',opts),/נמצאה/);assert.equal(f.data.experiments.length,0);
   await reviewProposal(store,String(p._id),'test','actor',opts);assert.equal(f.data.proposals[0].status,'running');assert.equal(f.data.experiments[0].delivery,'randomized');assert.deepEqual(f.data.experiments[0].arms[0].patch,{});

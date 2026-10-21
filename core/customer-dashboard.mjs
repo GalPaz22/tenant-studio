@@ -2,7 +2,7 @@ import express from 'express';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { ObjectId } from 'mongodb';
-import { getMongo, configureDashboardStorage } from './dashboard/core/db.js';
+import { getMongo, getRedis, configureDashboardStorage } from './dashboard/core/db.js';
 import { getTenantByApiKey } from './dashboard/core/tenant.js';
 import { configureStudioTransport } from './dashboard/agent/studio-client.js';
 import { dashboardRoutes } from './dashboard/api/routes/dashboard.js';
@@ -100,7 +100,7 @@ export async function installCustomerDashboard(app, { operations, storage, resol
   app.use('/api/customer-dashboard', router);
   // Refresh saved rules and experiments, expire elapsed tests; never generate proposals or run a model.
   let refreshing = false;
-  const timer = setInterval(async () => { if (refreshing || !process.env.REDIS_URL) return; refreshing = true; try { await expireWeeklyExperiments(); await refreshAllActiveKeys(); await refreshAllActiveRuleKeys(); } catch {} finally { refreshing = false; } }, 30000);
+  const timer = setInterval(async () => { if (refreshing) return; refreshing = true; try { await expireWeeklyExperiments(); await refreshAllActiveKeys(); if(await getRedis()) await refreshAllActiveRuleKeys(); } catch {} finally { refreshing = false; } }, 30000);
   timer.unref();
   return () => clearInterval(timer);
 }

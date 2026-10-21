@@ -1,3 +1,4 @@
+import { searchExperimentPublication } from './search-publication.js';
 import { controlDb, getRedis } from "../core/db.js";
 import { siblingApiKeys } from "../core/tenant.js";
 export const ACTIVE_KEY = (apiKey) => `experiments:active:${apiKey}`;
@@ -20,11 +21,11 @@ export function toWire(exp) {
  * with), with the running set unioned across those keys.
  */
 export async function publishActiveExperiments(apiKey) {
-    const redis = await getRedis();
-    if (!redis) {
-        console.warn("[publisher] Redis unavailable; hook will serve control");
-        return;
-    }
+    const redis=await getRedis();
+    if(redis){try{return await publishRedisExperiments(apiKey,redis);}catch{/* The search server has its own authenticated connection. */}}
+    return searchExperimentPublication(apiKey,{publish:true});
+}
+async function publishRedisExperiments(apiKey,redis) {
     const keys = await siblingApiKeys(apiKey);
     const db = await controlDb();
     const running = (await db
@@ -38,6 +39,7 @@ export async function publishActiveExperiments(apiKey) {
         else
             await redis.del(ACTIVE_KEY(k));
     }
+    return {available:true,published:true,mode:'studio-redis',experimentIds:running.map(exp=>String(exp._id))};
 }
 /** Cron target: refresh keys for every tenant with running experiments. */
 export async function refreshAllActiveKeys() {
@@ -51,4 +53,9 @@ export async function refreshAllActiveKeys() {
             console.error(`[publisher] refresh failed for ${apiKey}:`, e.message);
         }
     }
+}
+
+export async function experimentPublicationStatus(apiKey){
+ const redis=await getRedis();if(redis){try{const wire=JSON.parse(await redis.get(ACTIVE_KEY(apiKey))||'[]');return {available:true,published:true,mode:'studio-redis',experimentIds:wire.map(e=>e.id)};}catch{}}
+ return searchExperimentPublication(apiKey);
 }

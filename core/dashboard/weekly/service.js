@@ -1,10 +1,10 @@
 import { reportGate } from '../analytics/work-limit.js';
 import { ObjectId } from 'mongodb';
-import { controlDb, getMongo, getRedis, tenantDb, ensureTenantExperimentIndexes } from '../core/db.js';
+import { controlDb, getMongo, tenantDb, ensureTenantExperimentIndexes } from '../core/db.js';
 import { loadStoreEvents, DAY_MS } from '../analytics/events.js';
 import { askChatAgent } from '../../../model.mjs';
 import { analyzeWeek, modelInput, Plans, WEEKLY_PROMPT, proposalFromPlan, fingerprint, productFacts } from './analysis.js';
-import { publishActiveExperiments, ACTIVE_KEY } from '../engine/publisher.js';
+import { publishActiveExperiments, experimentPublicationStatus } from '../engine/publisher.js';
 import { clearSearchCache } from '../optimization/boosts.js';
 import { loadExperimentMetrics } from './metrics.js';
 const fail=(message,status=409)=>Object.assign(Error(message),{status});
@@ -15,7 +15,7 @@ export async function weeklyState(store){
  const db=await controlDb(),report=await db.collection('weekly_store_reviews').findOne({dbName:store.dbName},{sort:{generatedAt:-1}});
  if(report?.status==='generating'&&Date.now()-+report.generatedAt>5*60000){await db.collection('weekly_store_reviews').updateOne({_id:report._id,status:'generating',generatedAt:report.generatedAt},{$set:{status:'failed',error:'יצירת הדוח הופסקה. אפשר לנסות שוב.'}});report.status='failed';report.error='יצירת הדוח הופסקה. אפשר לנסות שוב.';}
  const proposals=await db.collection('proposals').find({dbName:store.dbName,kind:'weeklyOptimization'}).sort({createdAt:-1}).limit(30).toArray();
- if(proposals.some(p=>['running','applied'].includes(p.status))){let active=[];try{const redis=await getRedis();active=JSON.parse(redis?await redis.get(ACTIVE_KEY(store.apiKey))||'[]':'[]');}catch{}for(const p of proposals)if(['running','applied'].includes(p.status))p.published=active.some(e=>e.id===p.experimentId);}
+ if(proposals.some(p=>['running','applied'].includes(p.status))){let active=[];try{active=(await experimentPublicationStatus(store.apiKey)).experimentIds.map(id=>({id}));}catch{}for(const p of proposals)if(['running','applied'].includes(p.status))p.published=active.some(e=>e.id===p.experimentId);}
  const now=new Date(),period=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-((now.getUTCDay()+6)%7))).toISOString().slice(0,10);
  return {report,proposals,canGenerate:!report||report.period!==period||report.status==='failed'};
 }
@@ -68,16 +68,16 @@ export async function generateWeeklyReport(store,id,report,{ask=askChatAgent,loa
   });}finally{await session.endSession();}
  }catch(e){console.error('[weekly review] generation failed:',e.name);await db.collection('weekly_store_reviews').updateOne({_id:id,status:'generating',generatedAt:report.generatedAt},{$set:{status:'failed',error:'לא ניתן להשלים כעת את הדוח. לא הופעלו שינויים. אפשר לנסות שוב.'}});}
 }
-export async function verifyEngine(){
+export async function verifyEngine(store){
  try{const response=await fetch(new URL('/health',process.env.SEARCH_SERVICE_URL||'https://api.semantix-ai.com'),{signal:AbortSignal.timeout(5000)});const health=await response.json();if(health.features?.weeklyReviewV1!==true)throw Error('unsupported');}catch{throw fail('מנוע החיפוש עדיין לא עודכן לתמיכה בהצעות ובמדידת ניסויים. יש לפרוס את dashboard-server מהענף main לפני הפעלה.');}
- if(!await getRedis())throw fail('החיבור לפרסום שינויים אינו זמין. לא הופעל שינוי.');
+ try{await experimentPublicationStatus(store.apiKey);}catch{throw fail('שירות פרסום הניסויים אינו זמין. יש לוודא שגרסת dashboard-server העדכנית נפרסה ושהחיבור שלו ל-Redis תקין. לא הופעל שינוי.');}
 }
 function experiment(p,delivery,by){const now=new Date();return {_id:new ObjectId(),dbName:p.dbName,tenantApiKey:p.tenantApiKey,proposalId:String(p._id),name:p.title,hypothesis:p.hypothesis,source:'manual',type:'pin',layer:'weekly',targeting:{mode:'queryMatch',patterns:p.queries,matchType:'exact'},arms:[{key:'control',weight:1,patch:{}},{key:'v1',weight:1,patch:p.patch}],trafficPct:100,primaryMetric:p.metric,delivery,status:'running',createdAt:now,startedAt:now,...(delivery==='randomized'?{expiresAt:new Date(+now+21*DAY_MS)}:{}),statusHistory:[{status:'running',at:now,by}]};}
-export async function reviewProposal(store,id,action,by,{verify=verifyEngine}={}){
+export async function reviewProposal(store,id,action,by,{verify=verifyEngine,publish=publishActiveExperiments}={}){
  const db=await controlDb(),_id=new ObjectId(id),col=db.collection('proposals');
  if(action==='reject'){const r=await col.updateOne({_id,dbName:store.dbName,kind:'weeklyOptimization',status:'pending'},{$set:{status:'rejected',reviewedAt:new Date(),reviewedBy:by}});if(!r.matchedCount)throw fail('ההצעה כבר נבדקה');return {saved:true};}
  if(!['approve','test','stop','promote'].includes(action))throw fail('פעולה לא מוכרת',400);
- if(action!=='stop')await verify();
+ if(action!=='stop')await verify(store);
  await ensureTenantExperimentIndexes(store.dbName);
  const session=(await getMongo()).startSession();let result;
  try{await session.withTransaction(async()=>{
@@ -108,7 +108,7 @@ export async function reviewProposal(store,id,action,by,{verify=verifyEngine}={}
    await db.collection('catalog_change_audits').insertOne({kind:'weeklyOptimization',proposalId:id,experimentId:String(exp._id),dbName:store.dbName,action,by,at:new Date(),patch:p.patch},{session});
    result={saved:true,experimentId:String(exp._id)};
  });}finally{await session.endSession();}
- let published=false;try{await publishActiveExperiments(store.apiKey);const redis=await getRedis(),wire=JSON.parse(redis?await redis.get(ACTIVE_KEY(store.apiKey))||'[]':'[]');const proposal=await col.findOne({_id});published=action==='stop'?!wire.some(e=>e.id===proposal.experimentId):wire.some(e=>e.id===result.experimentId);}catch{}
+ let published=false;try{const publication=await publish(store.apiKey),proposal=await col.findOne({_id});published=action==='stop'?!publication.experimentIds.includes(proposal.experimentId):publication.experimentIds.includes(result.experimentId);}catch{}
  await col.updateOne({_id,dbName:store.dbName},{$set:{published}});await clearSearchCache(store.dbName).catch(()=>{});
  return {...result,published,message:published?'נשמר וסונכרן למנוע. חשיפות וביצועים יופיעו לאחר הגעת תנועה.':'נשמר, אך הסנכרון למנוע טרם אומת. יש לרענן ולבדוק לפני הסקת מסקנות.'};
 }
