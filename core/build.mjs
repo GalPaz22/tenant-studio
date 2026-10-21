@@ -68,7 +68,7 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
     await stage('collect',async s=>{const state=run.checkpoints.collect??={};const result=await collectCatalog(project,run.options,state,{fetchSource:fetcher,asset,checkpoint,control,report:async text=>{s.done=state.count||0;await report(text)}});
       run.coverage={...run.coverage,scope:result.scope,sourceComplete:result.complete,sourceCoverage:result.coverage};
       await asset('collection',result);s.done=result.count||0;s.total=s.done;
-      for(const e of result.errors)run.errors.push({stage:'collect',...e});
+      for(const e of result.errors)run.errors.push({stage:'collect',...e});if(result.missing?.length)run.warnings.push(`${result.missing.length} כתובות במפת האתר כבר לא קיימות בחנות (404); דולגו`);
       if(!result.complete)run.warnings.push('חלק מעמודי המקור לא נקראו; הייבוא חלקי');
       if(result.coverage==='source-only')run.warnings.push('הסריקה מכסה את המקור המחובר; שלמות קטלוג החנות אינה מוכחת');});
     await stage('normalize',async s=>{const collection=await asset('collection'),state=run.checkpoints.normalize??={page:0,errors:[]};s.total=collection.count||0;
@@ -84,12 +84,16 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
         }
         state.page++;state.row=0;await checkpoint();
       }
-      const map=new Map();let duplicates=0;for(const key of state.keys)for(const p of await asset(key)){if(map.has(p.id)){duplicates++;if(map.get(p.id).contentHash!==p.contentHash)run.warnings.push('מוצר השתנה במהלך הסריקה: '+p.id);}map.set(p.id,p)}
+      // A page-crawled store (Magento) lists one product under several paths (/brand/X, /outlet/X): a repeat at another
+      // product URL is an alias of the first record, not a duplicate. Only a repeat at the same URL means the source shifted.
+      const map=new Map();let duplicates=0,aliases=0;for(const key of state.keys)for(const p of await asset(key)){const prior=map.get(p.id);
+        if(prior&&prior.url!==p.url){aliases++;continue;}
+        if(prior){duplicates++;if(prior.contentHash!==p.contentHash)run.warnings.push('מוצר השתנה במהלך הסריקה: '+p.id);}map.set(p.id,p)}
       const products=[...map.values()];if(!products.length)throw Error('לא התקבלו מוצרים תקינים מהמקור');
       await asset('products',products);s.done=products.length;
       for(const e of state.errors)run.errors.push({stage:'normalize',...e});
       const prior=new Map((previous?.catalog.products||[]).map(p=>[p.id,p])),current=new Set(products.map(p=>p.id));
-      run.coverage.duplicateIds=duplicates;run.coverage.snapshotConsistency='best-effort';
+      run.coverage.duplicateIds=duplicates;run.coverage.aliasUrls=aliases;run.coverage.snapshotConsistency='best-effort';
       run.metrics={products:products.length,variants:products.reduce((n,p)=>n+p.variants.length,0),withDescription:products.filter(p=>p.description).length,withSpecs:products.filter(p=>Object.keys(p.specifications).length).length,
         added:products.filter(p=>!prior.has(p.id)).length,updated:products.filter(p=>prior.has(p.id)&&prior.get(p.id).sourceContentHash!==p.contentHash).length,
         absentFromSource:[...prior.keys()].filter(id=>!current.has(id)).length};});

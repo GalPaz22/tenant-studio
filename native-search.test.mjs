@@ -62,6 +62,7 @@ test('a product the site cannot find is transplanted into another card without i
 test('counts and echo helpers',()=>{
  assert.deepEqual(replaceCounts(['<b>54</b> <i>פריטים</i> <span>20</span> פריטים נצפו <a>60 ספרים</a> <x>54 מוצרים</x>'],{total:13,shown:13,originalShown:20}),['<b>13</b> <i>פריטים</i> <span>13</span> פריטים נצפו <a>60 ספרים</a> <x>13 מוצרים</x>']);
  assert.equal(replaceEcho("t='011' u=?q=011",'011','הרי פוטר'),"t='הרי פוטר' u=?q=הרי פוטר");
+ assert.equal(replaceEcho("<title>'ch10048_001'</title>",'CH10048_001','תרמיל לטיול'),"<title>'תרמיל לטיול'</title>");
 });
 
 test('harvesting is budgeted per minute and never repeats a card already seen',async()=>{
@@ -79,4 +80,16 @@ test('responses without product cards (articles, suggestion-only sections) are l
  const native=createNativeSearch(),args={project:{id:'p6'},lookup,fetchText:async()=>{throw Error('should not fetch')},search:async()=>({matches:[catalog[0]],total:1})};
  assert.equal(await native.render({...args,url:origin+'/search?q=a&type=article',text:page('a',['a']),type:'text/html'}),null);
  assert.equal(await native.render({...args,url:origin+'/search/suggest?q=a&section_id=predictive',text:'<div><a href="/pages/about">About</a></div>',type:'text/html'}),null);
+});
+
+test('a site that cannot search SKUs (slug = SKU in lower case) is harvested by title, which goes first once it worked',async()=>{
+ const packs=['e','f','g'].map((x,i)=>({id:'CH'+i+'_050',sku:'CH'+i+'_050',title:'Pack '+x,url:`${origin}/ch${i}_050`,image:`${origin}/img/${x}.jpg`,price:20+i}));
+ assert.deepEqual(productKeys(packs[0]),['CH0_050','Pack e']);
+ const look=catalogLookup(packs,origin),item=p=>`<li class="product-item"><a href="${p.url}"><img src="/cache/${p.sku}.jpg"></a><a href="${p.url}" class="name">${p.title}</a><span class="brand">Brand ${p.title.slice(-1)}</span><span class="price">7${p.price} ₪</span></li>`;
+ const html=(q,ps)=>`<html><head><title>${q}</title></head><body><ul class="products">${ps.map(item).join('')}</ul></body></html>`;
+ const asked=[];const fetchText=async href=>{const q=new URL(href).searchParams.get('q');asked.push(q);return {type:'text/html',text:html(q,packs.filter(p=>p.title===q))};};
+ const native=createNativeSearch({concurrency:1});
+ const out=await native.render({project:{id:'pk'},url:origin+'/catalogsearch/result/?q=x',text:html('x',[packs[2],packs[0]]),type:'text/html',lookup:look,fetchText,search:async()=>({matches:[packs[1],packs[0],packs[2]].map((p,i)=>i===0?p:p),total:3})});
+ assert.deepEqual([...out.matchAll(/class="brand">([^<]+)/g)].map(m=>m[1]),['Brand f','Brand e','Brand g'],'each card is the site\'s own, not a transplanted template');
+ assert.deepEqual(asked,['CH1_050','Pack f'],'after one title hit no SKU search is wasted');
 });
