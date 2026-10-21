@@ -42,3 +42,15 @@ test('authenticated studio bridge isolates history, defers writes, rejects stale
   assert.equal((await send('/approve',{apiKey:'a',draftId:second.draft.id})).status,200);assert.equal(saves,1);
  }finally{await new Promise(r=>server.close(r));if(prior===undefined)delete process.env.STUDIO_CUSTOMER_API_TOKEN;else process.env.STUDIO_CUSTOMER_API_TOKEN=prior;}
 });
+test('customer action proposals never stream an unapproved completion claim and catalog questions never load analytics',async()=>{
+ const before=process.env.STUDIO_CUSTOMER_API_TOKEN;process.env.STUDIO_CUSTOMER_API_TOKEN='stream-fixture';
+ const s=memory(),p=project();await s.save(p);let calls=0;
+ const app=express();app.use(express.json());installCustomerChat(app,{store:s,drafts:memory(),persist:async()=>assert.fail('must not save'),publish:async()=>assert.fail('must not publish'),locked:async(_id,fn)=>fn(),resolveTenant:async()=>({dbName:'manoVino'}),readStoreProfile:async()=>null,loadAnalytics:async()=>assert.fail('unrelated report must not load'),model:()=>async(_prompt,opts)=>{
+  if(calls++===0)return {tools:[{name:'promote_products',term:'ריף',level:2}]};
+  assert.equal(opts.onText,null,'prepared actions suppress provider preview');return {message:'הוכנה הצעת קידום לאישור'};
+ },judge:()=>async()=>assert.fail('no search verification needed')});
+ const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+ try{const response=await fetch(`http://127.0.0.1:${server.address().port}/api/customer-chat/turn`,{method:'POST',headers:{'content-type':'application/json','X-Studio-Customer-Token':'stream-fixture'},body:JSON.stringify({apiKey:'a',message:'קדם את ריף'})});
+  const events=(await response.text()).trim().split('\n').map(JSON.parse),done=events.at(-1);assert.equal(done.type,'done');assert.equal(done.analyticsStatus,'not_requested');assert.equal(done.actions.length,1);assert.ok(!events.some(e=>e.type==='answer_delta'));assert.equal(done.draft,null);
+ }finally{await new Promise(r=>server.close(r));if(before===undefined)delete process.env.STUDIO_CUSTOMER_API_TOKEN;else process.env.STUDIO_CUSTOMER_API_TOKEN=before;}
+});

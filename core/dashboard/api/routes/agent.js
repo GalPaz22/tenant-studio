@@ -73,7 +73,7 @@ export async function agentRoutes(app) {
             close();
             return;
         }
-        send({ type: "snapshot", text: sub.text, step: sub.step });
+        send({ type: "snapshot", text: sub.text, step: sub.step, note: sub.note, provisional: sub.provisional });
     });
     app.post("/agent/runs/:id/stop", async (req, reply) => {
         const { id } = req.params;

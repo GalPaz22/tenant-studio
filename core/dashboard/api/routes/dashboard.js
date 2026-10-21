@@ -1,4 +1,4 @@
-import { buildConversionReport } from "../../analytics/report.js";
+import { getDashboardReport, invalidateMeasuredReports } from "../../analytics/report-cache.js";
 import { liveSearch } from "../../analytics/live-search.js";
 import { getTenantByApiKey, storeProfile } from "../../core/tenant.js";
 import { tenantDb } from "../../core/db.js";
@@ -10,6 +10,7 @@ import { dashboardChatEngine } from '../../agent/studio-client.js';
 // Share expensive reports across dashboard tabs; concurrent requests build once.
 const cache = new Map();
 export function invalidateDashboardReports(dbName) {
+    invalidateMeasuredReports(dbName);
     for (const key of cache.keys())
         if (key.startsWith(`${dbName}:`))
             cache.delete(key);
@@ -120,7 +121,7 @@ export async function dashboardRoutes(app) {
             for (const [k, v] of cache)
                 if (v.expires <= Date.now())
                     cache.delete(k);
-            const result = Promise.all([storeProfile(t.dbName), buildConversionReport(t, { days: count, persist: false })])
+            const result = Promise.all([storeProfile(t.dbName), getDashboardReport(t, { days: count })])
                 .then(([store, report]) => ({ store, report, chat: { engine: dashboardChatEngine() === 'studio' ? 'tenant-studio' : 'optimizer' } }))
                 .catch(error => { cache.delete(key); throw error; });
             entry = { expires: Date.now() + 60_000, result };

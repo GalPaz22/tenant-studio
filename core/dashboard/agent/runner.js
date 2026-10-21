@@ -1,7 +1,6 @@
 import { ObjectId } from 'mongodb';
 import { controlDb } from '../core/db.js';
 import { getTenantByApiKey } from '../core/tenant.js';
-import { buildConversionReport, reportDigest } from '../analytics/report.js';
 import { runStudioTurn, saveStudioProposals } from './studio-client.js';
 
 // Runs live in the Studio process. Mongo keeps history, per-store leases and
@@ -10,7 +9,7 @@ const active = new Map(), feeds = new Map();
 export function subscribeRun(id, listener) {
   const feed = feeds.get(id); if (!feed) return null;
   feed.listeners.add(listener);
-  return { text: feed.text, step: feed.step, unsubscribe: () => feed.listeners.delete(listener) };
+  return { text: feed.text, step: feed.step, note: feed.note, provisional: feed.provisional, unsubscribe: () => feed.listeners.delete(listener) };
 }
 export async function stopAgentRun(id) {
   const db = await controlDb();
@@ -34,11 +33,21 @@ export async function startAgentRun(apiKey, opts = {}) {
     const request = opts.request?.trim() || (opts.query ? `בדיקת החיפוש ״${opts.query}״` : 'סקירה מלאה של החנות');
     await runs.insertOne({ _id: id, tenantApiKey: apiKey, dbName: tenant.dbName, conversationId, request, query: opts.query || null, engine: 'tenant-studio', model: 'tenant-studio', mode: opts.query ? 'query' : opts.review ? 'review' : 'ask', trigger: 'manual', startedAt: now, lastProgressAt: now, status: 'queued', steps: [], toolCalls: 0, proposals: 0 });
   } catch (error) { await locks.deleteOne({ _id: tenant.dbName, owner: runId }); throw error; }
-  const controller = new AbortController(), feed = { text: '', step: null, listeners: new Set() };
+  const controller = new AbortController(), feed = { text: '', step: null, note: '', provisional: false, listeners: new Set() };
   active.set(runId, controller); feeds.set(runId, feed);
   const emit = event => { for (const listener of feed.listeners) { try { listener(event); } catch {} } };
   const update = fields => runs.updateOne({ _id: id, dbName: tenant.dbName }, { $set: { ...fields, lastProgressAt: new Date() } });
   const done = (async () => {
+    let pendingSteps = [], flushTimer = null, progressWrite = Promise.resolve(), progressError = null;
+    let toolCalls = 0;
+    const flushProgress = () => {
+      clearTimeout(flushTimer); flushTimer = null;
+      if (pendingSteps.length) {
+        const batch = pendingSteps; pendingSteps = []; const count = toolCalls;
+        progressWrite = progressWrite.then(() => runs.updateOne({ _id: id }, { $push: { steps: { $each: batch, $slice: -400 } }, $set: { lastProgressAt: new Date(), toolCalls: count } })).catch(error => { progressError = error; });
+      }
+      return progressWrite;
+    };
     const timeout = setTimeout(() => controller.abort(), 10 * 60000);
     let checking = false;
     const cancellation = setInterval(async () => {
@@ -48,30 +57,36 @@ export async function startAgentRun(apiKey, opts = {}) {
     }, 2000);
     try {
       await update({ status: 'running' });
-      const [report, previous] = await Promise.all([
-        buildConversionReport(tenant, { days: opts.days || 30, persist: false }).catch(() => null),
-        runs.find({ dbName: tenant.dbName, conversationId, _id: { $ne: id }, status: 'completed' }).sort({ startedAt: -1 }).limit(8).toArray(),
-      ]);
+      const previous = await runs.find({ dbName: tenant.dbName, conversationId, _id: { $ne: id }, status: 'completed' }, { projection: { request: 1, summary: 1 } }).sort({ startedAt: -1 }).limit(8).toArray();
       if (controller.signal.aborted) throw Error('Stopped');
       const history = previous.reverse().flatMap(row => [{ role: 'user', text: String(row.request || '').slice(0, 2000) }, { role: 'assistant', text: String(row.summary || '').slice(0, 8000) }]);
       const message = [opts.query ? `בדיקת החיפוש ״${opts.query}״.` : '', opts.request || (opts.review ? 'סקור את ביצועי החיפוש והצע שיפורים מבוססים. הכן שינויים לאישור בלבד.' : 'בדוק את החיפוש לפי נתוני החנות.')].filter(Boolean).join(' ');
-      let toolCalls = 0;
-      const result = await runStudioTurn({ apiKey, message, history, analytics: report ? reportDigest(report) : null }, controller.signal, async event => {
+      const result = await runStudioTurn({ apiKey, message, history, analyticsDays: opts.days || 30 }, controller.signal, async event => {
         if (controller.signal.aborted) throw Error('Stopped');
+        if (event.type === 'answer_reset') { feed.text = ''; feed.provisional = false; emit({ type: 'reset' }); return; }
+        if (event.type === 'answer_delta') {
+          if (feed.text.length + event.delta.length > 12000) throw Error('תשובת הסטודיו ארוכה מדי');
+          feed.text += event.delta; feed.provisional = true;
+          emit({ type: 'text', delta: event.delta, provisional: true }); return;
+        }
         const step = { id: String(event.id || new ObjectId()), at: new Date() };
         if (event.type === 'tool') { toolCalls++; feed.step = event.name; emit({ type: 'step', name: event.name }); Object.assign(step, { type: 'tool', name: event.name }); }
-        else Object.assign(step, { type: 'note', text: String(event.text || '').slice(0, 1500), ok: event.ok });
-        await runs.updateOne({ _id: id }, { $push: { steps: { $each: [step], $slice: -400 } }, $set: { lastProgressAt: new Date(), toolCalls } });
+        else { Object.assign(step, { type: 'note', text: String(event.text || '').slice(0, 1500), ok: event.ok }); feed.note = step.text; emit({ type: 'note', text: step.text }); }
+        pendingSteps.push(step);
+        if (!flushTimer) flushTimer = setTimeout(flushProgress, 300);
       });
+      await flushProgress(); if (progressError) throw progressError;
       if (controller.signal.aborted) throw Error('Stopped');
       const proposals = await saveStudioProposals(tenant, runId, result);
-      feed.text = result.summary; emit({ type: 'text', delta: result.summary });
-      await update({ status: 'completed', endedAt: new Date(), summary: result.summary, proposals, toolCalls, reportMissing: !report, studioUsage: result.usage, studioModelCalls: result.modelCalls });
+      feed.text = result.summary; feed.provisional = false; emit({ type: 'answer', text: result.summary });
+      await update({ status: 'completed', endedAt: new Date(), summary: result.summary, proposals, toolCalls, reportMissing: result.analyticsStatus === 'unavailable', analyticsStatus: result.analyticsStatus, studioUsage: result.usage, studioModelCalls: result.modelCalls, timings: result.timings });
       return { runId, summary: result.summary };
     } catch (error) {
+      await flushProgress();
       await update({ status: controller.signal.aborted ? 'stopped' : 'failed', endedAt: new Date(), error: controller.signal.aborted ? 'הריצה נעצרה' : error.message });
       return { runId, error: error.message };
     } finally {
+      clearTimeout(flushTimer);
       clearTimeout(timeout); clearInterval(cancellation); emit({ type: 'done' }); feeds.delete(runId); active.delete(runId);
       await locks.deleteOne({ _id: tenant.dbName, owner: runId });
     }

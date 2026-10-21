@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import {createHash} from 'node:crypto';
 import {validateHooks} from './core/tenant-hooks.mjs';
+import {messagePrefix} from './core/json-message-stream.mjs';
 export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.1-flash-lite';
 export const askChatAgent=prompt=>askAgent(prompt,{model:chatModel(),reasoning:false});
 // The studio agent: gemini-3.8-flash by default (fast multi-step tool use); the reviewer and planner stay on Pro.
@@ -11,10 +12,10 @@ export const processingModel=()=>process.env.STUDIO_PROCESSING_MODEL||'gemini-3.
 // Research over a lot of evidence can take minutes; one retry when the provider's deadline expires.
 export const askPlanner=async prompt=>{try{return await askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}catch(e){if(!/DEADLINE_EXCEEDED|timed? ?out|504|503|UNAVAILABLE/i.test(e.message))throw e;return askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}};
 export const askProcessing=prompt=>askAgent(prompt,{model:processingModel(),reasoning:false});
-export const askStudioAgent=prompt=>askAgent(prompt,{model:studioModel(),reasoning:false,timeoutMs:180000});
+export const askStudioAgent=(prompt,options={})=>askAgent(prompt,{...options,model:studioModel(),reasoning:false,timeoutMs:180000});
 // The reviewer that accepts or rejects a search fix thinks before answering; a cheap judge approves false claims.
 export const judgeModel=()=>process.env.STUDIO_JUDGE_MODEL||plannerModel();
-export const askJudgeAgent=prompt=>askAgent(prompt,{model:judgeModel(),reasoning:true});
+export const askJudgeAgent=(prompt,options={})=>askAgent(prompt,{...options,model:judgeModel(),reasoning:true});
 const minimalRejected=new Set();
 // A prompt may start with a part that is identical for every tenant and every round (instructions, engine notes, tool
 // list), followed by CACHE_BREAK. That part is kept in an explicit Gemini context cache (billed at the cached rate) and
@@ -30,18 +31,33 @@ async function cachedPrefix(ai,model,prefix){
  const pending=ai.caches.create({model,config:{contents:[{role:'user',parts:[{text:prefix}]}],toolConfig:NO_TOOLS,ttl:CACHE_TTL_S+'s',displayName:'studio-agent-static'}}).catch(e=>{cacheFailed.add(key);caches.delete(key);console.error('[studio] prompt cache unavailable:',e.message.slice(0,160));return null;});
  const entry={pending,expires:Date.now()+CACHE_TTL_S*1000};caches.set(key,entry);entry.name=(await pending)?.name||null;return entry.name;
 }
-export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false,timeoutMs=reasoning?120000:45000}={}) {
+export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false,timeoutMs=reasoning?120000:45000,onText=null,signal}={}) {
  const key=process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
  if(!key)throw Error('נדרש GEMINI_API_KEY או GOOGLE_API_KEY להפעלת האייג׳נט');
  const ai=new GoogleGenAI({apiKey:key}),split=prompt.indexOf(CACHE_BREAK);
  let contents=prompt.replace(CACHE_BREAK,'\n'),cachedContent=null;
  if(split>0){cachedContent=await cachedPrefix(ai,model,prompt.slice(0,split));if(cachedContent)contents=prompt.slice(split+CACHE_BREAK.length);}
  // Fast calls use the lowest thinking level a model accepts; newer models reject "minimal", so fall back to "low".
- const ask=level=>ai.models.generateContent({
+ const ask=async level=>{
+  const request={
   model,contents,
   config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens:reasoning?24000:12000,...(cachedContent?{cachedContent}:{toolConfig:NO_TOOLS}),
-   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:level}:{thinkingBudget:reasoning?8192:0},httpOptions:{timeout:timeoutMs,retryOptions:{attempts:1}}}
- });
+   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:level}:{thinkingBudget:reasoning?8192:0},...(signal?{abortSignal:signal}:{}),httpOptions:{timeout:timeoutMs,retryOptions:{attempts:1}}}
+  };
+  if(!onText)return ai.models.generateContent(request);
+  await onText(null);
+  let raw='',sent='',usageMetadata,candidates;
+  const stream=await ai.models.generateContentStream(request);
+  for await(const chunk of stream){
+   if(signal?.aborted)throw Object.assign(Error('הריצה נעצרה'),{stopped:true});
+   raw+=chunk.text||'';if(raw.length>128000)throw Error('פלט המודל חרג מהמגבלה');
+   if(chunk.usageMetadata)usageMetadata=chunk.usageMetadata;
+   if(chunk.candidates?.[0]?.finishReason)candidates=chunk.candidates;
+   const value=messagePrefix(raw);
+   if(value.length>sent.length){await onText(value.slice(sent.length));sent=value;}
+  }
+  return {text:raw,usageMetadata,candidates};
+ };
  let level=reasoning?'high':minimalRejected.has(model)||!/flash/.test(model)?'low':'minimal',response;
  // Each known rejection changes one thing and retries: a rejected cache → the whole prompt without it; a thinking level
  // the model does not support → "low" (remembered per model). Anything else, or the same rejection twice, is thrown.

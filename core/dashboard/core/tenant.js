@@ -73,7 +73,7 @@ export async function storeProfile(dbName) {
 }
 export async function getTenantByApiKey(apiKey) {
     const db = await coreUsersDb();
-    const d = await db.collection("users").findOne({ apiKey });
+    const d = await db.collection("users").findOne({ apiKey }, { projection: { apiKey: 1, dbName: 1, context: 1, 'credentials.softCategories': 1, 'credentials.softCategoriesBoosted': 1, 'credentials.pinnedResults': 1 } });
     if (!d)
         return null;
     return {

@@ -128,7 +128,7 @@ export async function loadStoreEvents(dbName, from, to, options = {}) {
             const latest = await db.collection(name).findOne({}, { sort: { _id: -1 }, projection: { _id: 1 } });
             const byId = latest?._id instanceof ObjectId ? { _id: { $gte: ObjectId.createFromTime(Math.floor((f - PAD_MS) / 1000)), $lt: ObjectId.createFromTime(Math.floor(Math.min(t + PAD_MS, Date.now() + DAY_MS) / 1000)) } } : {};
             cursor = db.collection(name).find(byId, { projection: { ...projection, timestamp: 1, created_at: 1, received_at: 1, session_id: 1, sessionId: 1 } })
-                .sort({ _id: -1 }).limit(maxRows + 1).batchSize(200).maxTimeMS(45000);
+                .sort({ _id: -1 }).limit(maxRows + 1).batchSize(options.batchSize ?? 1000).maxTimeMS(45000);
             for await (const row of cursor) {
                 if (++rows > maxRows) { truncated = true; break; }
                 for (const [kind, event] of normalize(row)) {

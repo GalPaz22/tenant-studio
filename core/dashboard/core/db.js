@@ -80,6 +80,7 @@ export async function ensureIndexes() {
     await db.collection("conversion_reports").createIndex({ dbName: 1, source: 1, generatedAt: -1 });
     await db.collection("conversion_reports").createIndex({ runId: 1 }, { sparse: true });
     await db.collection("agent_runs").createIndex({ dbName: 1, startedAt: -1 });
+    await db.collection("agent_runs").createIndex({ dbName: 1, conversationId: 1, status: 1, startedAt: -1 }, { name: 'agent_conversation_history' });
     await db.collection("catalog_change_audits").createIndex({ tenantApiKey: 1, appliedAt: -1 });
 }
 /** Tenant-side index; called lazily when an experiment starts for that tenant. */

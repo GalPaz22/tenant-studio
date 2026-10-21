@@ -158,7 +158,7 @@ export async function latestConversionReports(dbName) {
 export function reportDigest(r) {
     const q = (x) => ({ q: x.query, s: x.searches, ss: x.searchSessions, zero: x.zeroRate, click: x.clickRate, cart: x.cartRate, buy: x.purchaseRate, stage: x.leakStage, below: x.sessionsBelowAverage });
     return {
-        reportId: r.reportId ?? null, days: r.days, window: r.window, sources: r.sources, catalog: r.catalog, excludedQueries: r.excludedQueries,
+        reportId: r.reportId ?? null, generatedAt: r.generatedAt, days: r.days, window: r.window, sources: r.sources, catalog: r.catalog, excludedQueries: r.excludedQueries,
         funnel: { sessions: r.funnel.sessions, rates: r.funnel.rates, orders: r.funnel.orders, revenue: r.funnel.revenue, cartSessionsPurchaseRate: r.funnel.cartSessionsPurchaseRate, coverage: r.funnel.coverage },
         tracking: r.tracking.map(t => ({ code: t.code, severity: t.severity, detail: t.detail })),
         topQueries: r.queries.top.slice(0, 20).map(q),

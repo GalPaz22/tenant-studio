@@ -564,7 +564,7 @@ DATA ${JSON.stringify({request:message,conversation,outOfStock:checks[0]?.outOfS
  return {checks,satisfied:whole&&queriesVerdict.every(q=>q.satisfied),queries:queriesVerdict,summary:String(verdict.summary||'').slice(0,600),...(unmet&&{unmet})};
 }
 
-export async function studioAgent(project,message,{model,judge=model,onEvent=async()=>{},context=null,services={},verifyQueries=null,toolset=tools,instructions=''}={}){
+export async function studioAgent(project,message,{model,judge=model,onEvent=async()=>{},context=null,services={},verifyQueries=null,toolset=tools,instructions='',streamAnswers=false}={}){
  if(!text(message,3000))throw Error('הודעה לא תקינה');
  const p=structuredClone(project);
  const ctx={p,profile:structuredClone(p.revisions.at(-1).profile),model,services:{signals:readSearchSignals,refreshSourceFields,inspectPage:inspectStorePage,database:{fields:dbFields,search:dbSearch,importField:importDbField,clicks:dbShopperClicks},get crawls(){return defaultCrawls();},createSearch:createStudioSearch,...services},dataDirty:false,runtime:null};
@@ -572,14 +572,18 @@ export async function studioAgent(project,message,{model,judge=model,onEvent=asy
  const initialProfile=hash(ctx.profile),baseline=evaluateExamples(project,project.revisions.at(-1).profile);
  ctx.search=async(query,limit)=>{ensureIndex(ctx);const key=hash(ctx.profile);if(ctx.runtime?.key!==key)ctx.runtime={key,run:ctx.services.createSearch(ctx.p,ctx.profile)};return ctx.runtime.run(query,limit);};
  // The whole picture first (live parts cached on the project for 6 hours); a failure only leaves it out.
- const workspace=await workspaceContext(ctx).catch(()=>null);
+ const workspace=await (services.workspaceContext||workspaceContext)(ctx).catch(()=>null);
  const base=prompt(ctx,message,context,workspace)+(instructions?'\nSERVICE POLICY (overrides generic studio instructions): '+instructions:''),history=[],steps=[],changes=[];const failedCalls=new Map(),appliedCalls=new Map(),batches=new Map();let repeats=0,lastMutation=0;const stateOf=c=>hash([c.profile,c.dataVersion||0,c.settingsDirty||false,pluginHead(c.p)?.hash]);let modelFailures=0,lastModelError=null,saveWarned=false,baselineWarned=false,baselineBefore=null,dataImpact=null,answerWarned=false,verifyRounds=0,verification=null,verifiedAt=null,idleWarned=0;
  for(let call=0;call<MAX_MODEL_CALLS;call++){
+  // A preview is permitted only for a read-only answer. Search fixes wait for
+  // all existing verification/rollback checks, then emit the validated message.
+  const preview=streamAnswers&&!changes.length&&hash(ctx.profile)===initialProfile&&!ctx.dataTouched&&!ctx.dataDirty&&!ctx.settingsDirty&&!ctx.pluginDirty&&!failedCalls.size&&!quotedQueries(message).length&&!verifyQueries?.length;
+  const onText=preview?async delta=>onEvent(delta===null?{type:'answer_reset'}:{type:'answer_delta',delta}):null;
   // A malformed, empty or timed-out model reply is retried (twice) with a protocol reminder instead of ending the turn.
   let r=null;
   for(let attempt=0;attempt<3&&!validReply(r);attempt++){
    if(attempt)await onEvent({type:'note',text:'תשובת המודל לא התקבלה תקינה — מנסה שוב'});
-   try{r=normalizeReply(await model(base+'\nTOOL RESULTS '+JSON.stringify(compactHistory(history,call))+(attempt?'\nYour last reply broke the protocol'+(lastModelError?` (${lastModelError})`:'')+'. Reply with ONE JSON object written as plain text: {"tools":[{"name":"...",...args}]} for the NEXT actions, or {"message":"..."}. No native function calls. When editing code, send small plugin_patch edits by line range (startLine/endLine/replacement of a few lines), never a whole file.':'')));lastModelError=null;}catch(e){if(e?.stopped)throw e;modelFailures++;lastModelError=/MALFORMED_FUNCTION_CALL/.test(e?.message||'')?'an empty native function call — MALFORMED_FUNCTION_CALL':null;r=null;}
+   try{r=normalizeReply(await model(base+'\nTOOL RESULTS '+JSON.stringify(compactHistory(history,call))+(attempt?'\nYour last reply broke the protocol'+(lastModelError?` (${lastModelError})`:'')+'. Reply with ONE JSON object written as plain text: {"tools":[{"name":"...",...args}]} for the NEXT actions, or {"message":"..."}. No native function calls. When editing code, send small plugin_patch edits by line range (startLine/endLine/replacement of a few lines), never a whole file.':''),{onText}));lastModelError=null;}catch(e){if(streamAnswers)await onEvent({type:'answer_reset'});if(e?.stopped)throw e;modelFailures++;lastModelError=/MALFORMED_FUNCTION_CALL/.test(e?.message||'')?'an empty native function call — MALFORMED_FUNCTION_CALL':null;r=null;}
   }
   if(!validReply(r))throw Error('האייג׳נט החזיר תשובה לא תקינה');
   // The same batch again with nothing changed since it last ran: warn once, then close the turn with what was done.
@@ -592,6 +596,7 @@ export async function studioAgent(project,message,{model,judge=model,onEvent=asy
    r={message:`**סיכום אוטומטי** — האייג׳נט חזר על אותן פעולות בלי שינוי, ולכן המערכת עצרה אותו ומאמתת את מה שבוצע:\n${[...new Set(changes)].map(c=>'- '+c).join('\n')||'- לא בוצעו שינויים'}${failures}`};
   }
   if(Array.isArray(r.tools)){
+   if(streamAnswers)await onEvent({type:'answer_reset'});
    // Extra tools (e.g. from a merged list of replies) are dropped with a notice rather than ending the turn.
    const dropped=r.tools.length>MAX_TOOLS_PER_CALL?r.tools.slice(MAX_TOOLS_PER_CALL).map(c=>c?.name):[];if(dropped.length){r={...r,tools:r.tools.slice(0,MAX_TOOLS_PER_CALL)};history.push({tool:'harness',result:{error:`Only ${MAX_TOOLS_PER_CALL} tools per reply; not run: ${dropped.join(', ')}`}});}
    if(text(r.note,300))await onEvent({type:'note',text:r.note});

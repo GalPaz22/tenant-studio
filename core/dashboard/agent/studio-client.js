@@ -14,6 +14,8 @@ const actions = z.array(z.discriminatedUnion('kind', [
 const doneSchema = z.object({ type: z.literal('done'), engine: z.literal('tenant-studio'), summary: z.string().max(12000), actions,
     draft: z.object({ id: z.string().uuid(), projectId: z.string().uuid(), changes: z.array(z.string().max(2000)).max(100), version: z.number().int().positive() }).nullable(),
     modelCalls: z.number().int().min(0).max(24), usage: z.array(z.unknown()).max(24),
+    analyticsStatus: z.enum(['available', 'unavailable', 'not_requested']).optional(),
+    timings: z.object({ modelMs: z.number().nonnegative(), modelCalls: z.number().int().nonnegative(), analyticsMs: z.number().nonnegative(), firstModelMs: z.number().nonnegative().optional(), firstTextMs: z.number().nonnegative().nullable(), elapsedMs: z.number().nonnegative() }).optional(),
 });
 export async function studioRequest(operation, body, signal) {
     if (!transport) throw Error('Studio dashboard is not initialized');
@@ -46,7 +48,7 @@ export async function runStudioTurn(body, signal, onEvent) {
             throw Error(typeof event.message === 'string' ? event.message : 'הסטודיו לא השלים את התשובה');
         if (event.type === 'done')
             result = doneSchema.parse(event);
-        else if (['note', 'tool', 'tool_done'].includes(event.type))
+        else if (['note', 'tool', 'tool_done', 'answer_reset'].includes(event.type) || event.type === 'answer_delta' && typeof event.delta === 'string' && event.delta.length <= 12000)
             await onEvent(event);
     };
     try {
