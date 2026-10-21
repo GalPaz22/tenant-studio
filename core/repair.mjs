@@ -21,7 +21,10 @@ export async function prepareRepair(run,stage,project,repo){
   if(index<=taxonomy)run.operatorProfile=profile;
   else{const previous=await repo.asset(run.id,'profile');if(hash(profile)!==hash(previous)){await repo.asset(run.id,'profile',profile);index=Math.min(index,run.stages.findIndex(s=>s.key==='tags'));}}
  }
+ // Repairing a finished sitemap crawl retries its failed pages and keeps every page already read.
+ const crawl=run.checkpoints.collect,retryPages=stage==='collect'&&Array.isArray(crawl?.urls)&&crawl.urlCursor>=crawl.urls.length;
  for(const s of run.stages.slice(index)){s.status='pending';s.done=0;delete run.checkpoints[s.key];}
+ if(retryPages)run.checkpoints.collect={...crawl,retry:[...new Set([...(crawl.retry||[]),...crawl.errors.map(e=>e.url)])],errors:[],complete:false};
  delete run.checkpoints.verify;run.validation=null;
  run.errors=run.errors.filter(e=>!run.stages.slice(index).some(s=>s.key===e.stage));
  run.status='queued';run.finishedAt=null;

@@ -69,3 +69,34 @@ test('AI small-batch repair retains successful classifications and verifies the 
  await executeBuild(p,run,repo,{fetchSource,agent,model:async args=>{if(args.stage==='classify'){const data=JSON.parse(args.prompt.split('\nDATA ')[1]);assert.ok(data.products.length<=2);assert.ok(data.tags.length<=2);classified.push(...data.products.map(p=>p.id));}return model(args);}});
  finishRepair(run);assert.equal(run.status,'ready');assert.equal(run.repair.status,'resolved');assert.deepEqual(classified,['1','2','3','4','5']);assert.equal(run.metrics.tagDecisions.failed,undefined);
 }finally{await rm(root,{recursive:true,force:true});}});
+
+test('JSON-LD availability is read with or without the schema.org prefix (Magento emits bare "InStock")',()=>{
+  const at=availability=>normalizeRecord({'@type':'Product',name:'תרמיל',sku:'A1',offers:{price:'10',availability}},'magento','https://example.com','https://example.com/a1').stockStatus;
+  assert.equal(at('InStock'),'instock');assert.equal(at('https://schema.org/InStock'),'instock');assert.equal(at('http://schema.org/OutOfStock'),'outofstock');assert.equal(at('OutOfStock'),'outofstock');assert.equal(at(''),'unknown');
+});
+
+test('a product listed under several sitemap paths is one product, not a duplicate that blocks readiness',async()=>{const root=await mkdtemp(tmpdir()+'/core-alias-');try{
+  const page=(name,sku)=>`<html><head><title>${name}</title><script type="application/ld+json">${JSON.stringify({'@context':'https://schema.org','@type':'Product',name,sku,description:name,offers:{price:'99.90',priceCurrency:'ILS',availability:'InStock'}})}</script></head><body>${name}</body></html>`;
+  const pages={'/A1':page('תרמיל 60 ליטר','A1'),'/outlett/A1':page('תרמיל 60 ליטר','A1'),'/B2':page('מזוודה קשיחה','B2')};
+  const fetchPages=async url=>{const u=new URL(url);if(u.pathname==='/sitemap.xml')return `<urlset>${Object.keys(pages).map(p=>`<url><loc>https://example.com${p}</loc></url>`).join('')}</urlset>`;if(u.pathname==='/')return '<title>Gear</title><main>Gear</main>';if(pages[u.pathname])return pages[u.pathname];throw Error('Source HTTP 404');};
+  const repo=createRunStore(root),p={...project(),platform:'magento'},run=newBuild(p,validateBuildOptions({sourceType:'sitemap',sitemapUrl:'https://example.com/sitemap.xml',research:false,scanPages:false,skipStages:['enrich','tags']},p.platform));await repo.save(run);
+  const result=await executeBuild(p,run,repo,{fetchSource:fetchPages,agent,model});
+  assert.equal(result.run.coverage.duplicateIds,0);assert.equal(result.run.coverage.aliasUrls,1);
+  assert.ok(result.run.validation.checks.find(c=>c.name==='no-duplicate-product-ids').passed);
+  assert.deepEqual(result.bundle.productCards.map(c=>c.url).sort(),['https://example.com/A1','https://example.com/B2']);
+  assert.ok(!result.run.warnings.some(w=>w.includes('מוצר השתנה')));
+}finally{await rm(root,{recursive:true,force:true});}});
+
+test('sitemap: a 404 page does not leave the source unfinished, and a collect repair rereads only the failed pages',async()=>{const root=await mkdtemp(tmpdir()+'/core-sitemap-repair-');try{
+  const page=(name,sku)=>`<script type="application/ld+json">${JSON.stringify({'@context':'https://schema.org','@type':'Product',name,sku,description:name,offers:{price:'50',priceCurrency:'ILS',availability:'InStock'}})}</script>`;
+  const pages={'/A1':page('תרמיל','A1'),'/B2':page('מזוודה','B2'),'/C3':page('שק שינה','C3')};let online=false;const read=[];
+  const fetchPages=async url=>{const u=new URL(url);if(u.pathname==='/sitemap.xml')return `<urlset>${['/A1','/gone','/B2','/C3'].map(p=>`<url><loc>https://example.com${p}</loc></url>`).join('')}</urlset>`;if(u.pathname==='/')return '<title>Gear</title>';
+    read.push(u.pathname);if(u.pathname==='/gone')throw Error('Source HTTP 404');if(u.pathname==='/C3'&&!online)throw Error('getaddrinfo ENOTFOUND example.com');return pages[u.pathname];};
+  const repo=createRunStore(root),p={...project(),platform:'magento'},run=newBuild(p,validateBuildOptions({sourceType:'sitemap',sitemapUrl:'https://example.com/sitemap.xml',research:false,scanPages:false,verifySource:false,skipStages:['enrich','tags']},p.platform));await repo.save(run);
+  const first=await executeBuild(p,run,repo,{fetchSource:fetchPages,agent,model});
+  assert.equal(first.run.status,'partial');assert.equal(first.bundle.productCards.length,2);assert.ok(first.run.errors.some(e=>/ENOTFOUND/.test(e.error)));assert.ok(!first.run.errors.some(e=>/404/.test(e.error)));
+  online=true;read.length=0;await prepareRepair(first.run,'collect',p,repo);await repo.save(first.run);
+  const second=await executeBuild(p,first.run,repo,{fetchSource:fetchPages,agent,model});
+  assert.equal(second.run.status,'ready',JSON.stringify(second.run.errors));assert.deepEqual(read,['/C3']);
+  assert.deepEqual(second.bundle.productCards.map(c=>c.id).sort(),['A1','B2','C3']);assert.ok(second.bundle.productCards.every(c=>c.stockStatus==='instock'));
+}finally{await rm(root,{recursive:true,force:true});}});

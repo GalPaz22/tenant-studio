@@ -59,8 +59,13 @@ export function processProduct(raw, client, observations = [], observedAt = null
 // Tenant typo corrections; keys may be phrases ("מאיר שליו"), longest first, whole words only.
 export function applySpelling(query, aliases = {}) {
   let text = ` ${normalize(query)} `;
-  for (const [from, to] of Object.entries(aliases || {}).map(([f, t]) => [normalize(f), normalize(t)]).filter(([f]) => f).sort((a, b) => b[0].length - a[0].length))
-    while (text.includes(` ${from} `)) text = text.replace(` ${from} `, ` ${to} `);
+  // One left-to-right pass per alias: replaced text is never rescanned, so an alias whose correction contains it
+  // ("fenix" → "fēnix" normalizes to itself, "ספא" → "מוצרי ספא") cannot loop forever and hang the server.
+  for (const [from, to] of Object.entries(aliases || {}).map(([f, t]) => [normalize(f), normalize(t)]).filter(([f, t]) => f && f !== t).sort((a, b) => b[0].length - a[0].length)) {
+    let out = '', rest = text, i;
+    while ((i = rest.indexOf(` ${from} `)) >= 0) { out += rest.slice(0, i) + ` ${to}`; rest = rest.slice(i + from.length + 1); }
+    text = out + rest;
+  }
   return text.trim();
 }
 export function planQuery(query, client) {

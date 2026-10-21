@@ -38,7 +38,7 @@ export function normalizeRecord(raw,platform,origin,sourceUrl,at=new Date().toIS
     p={...raw,id:String(raw.id??raw.productID??raw.sku??raw['@id']??''),name:clean(raw.name||raw.title),
       url:raw.url||sourceUrl,sku:raw.sku||'',image:Array.isArray(raw.image)?raw.image[0]:raw.image,
       images:raw.images||[],price:amount(raw.price??offer?.price),regularPrice:amount(raw.regularPrice),currency:raw.currency||offer?.priceCurrency||null,
-      stockStatus:raw.stockStatus||(/\/InStock$/.test(offer?.availability||'')?'instock':/\/OutOfStock$/.test(offer?.availability||'')?'outofstock':'unknown'),
+      stockStatus:raw.stockStatus||(/(^|\/)InStock$/i.test(offer?.availability||'')?'instock':/(^|\/)OutOfStock$/i.test(offer?.availability||'')?'outofstock':'unknown'),
       categories:strings(raw.categories||raw.category),tags:strings(raw.tags),description:clean(raw.description),
       brand:typeof raw.brand==='object'?raw.brand.name:raw.brand||'',variants:raw.variants||[],specifications:raw.specifications||{}};
   }
@@ -122,12 +122,16 @@ export async function collectCatalog(project,options,state,{fetchSource=fetchPub
       for(const child of nested)if(new URL(child).origin===origin&&!state.seenSitemaps.includes(child)&&!state.sitemaps.includes(child))state.sitemaps.push(child);
       await checkpoint();await report(`התגלו ${state.urls.length} עמודים במפת האתר`);
     }
-    state.urlCursor??=0;
-    while(state.urlCursor<state.urls.length){await control();const url=state.urls[state.urlCursor];
-      try{const html=await fetchSource(url,{maxBytes:PAGE_BYTES});const rows=pageRows(html,url);if(rows.length){const key='catalog-url-'+state.urlCursor;await asset(key,{rows,platform:'custom',sourceUrl:url});state.pages.push(key);state.count=(state.count||0)+rows.length;}}
-      catch(e){if(e.status)throw e;state.errors.push({url,error:e.message});}
+    state.urlCursor??=0;state.missing??=[];
+    // A page the store answers 404/410 is gone from the store, not unread: it is reported but does not leave the source unfinished.
+    const read=async(url,i)=>{try{const html=await fetchSource(url,{maxBytes:PAGE_BYTES});const rows=pageRows(html,url);if(rows.length){const key='catalog-url-'+i;await asset(key,{rows,platform:'custom',sourceUrl:url});if(!state.pages.includes(key)){state.pages.push(key);state.count=(state.count||0)+rows.length;}}}
+      catch(e){if(e.status)throw e;(/HTTP 4(04|10)\b/.test(e.message)?state.missing:state.errors).push({url,error:e.message});}};
+    while(state.urlCursor<state.urls.length){await control();await read(state.urls[state.urlCursor],state.urlCursor);
       state.urlCursor++;await checkpoint();await report(`נקראו ${state.urlCursor} מתוך ${state.urls.length} עמודים`);await pause();
     }
+    // A repair of a finished crawl rereads only the pages that failed, not the whole sitemap.
+    while(state.retry?.length){await control();const url=state.retry[0];await read(url,state.urls.indexOf(url));state.retry.shift();await checkpoint();await report(`נקראו מחדש עמודים שנכשלו · נותרו ${state.retry.length}`);await pause();}
+    const at=key=>Number(key.slice('catalog-url-'.length));state.pages.sort((a,b)=>at(a)-at(b));
     state.complete=state.errors.length===0;return {...state,scope:'sitemap-public-products',coverage:'source-only'};
   }
   if(mode==='crawl') {

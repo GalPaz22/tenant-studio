@@ -29,15 +29,23 @@ export function pathKey(href,origin){
  }catch{return null}
 }
 export function catalogLookup(products,origin){
- const map=new Map();for(const p of products){const k=pathKey(p.url,origin);if(k&&!map.has(k))map.set(k,p);}
- return href=>{const k=pathKey(href,origin);return k&&map.get(k)||null;};
+ // Magento lists one product under several paths (/brands/x, /outlet/x, /x): a path we did not crawl still resolves
+ // by its last segment, as long as that segment names exactly one product.
+ const map=new Map(),bySlug=new Map(),slug=k=>k.split('/').at(-1);
+ for(const p of products){const k=pathKey(p.url,origin);if(!k)continue;if(!map.has(k))map.set(k,p);const s=slug(k);bySlug.set(s,bySlug.has(s)&&bySlug.get(s)!==p?null:p);}
+ return href=>{const k=pathKey(href,origin);return k&&(map.get(k)||bySlug.get(slug(k)))||null;};
 }
 // Keys the site's own search is likely to resolve to exactly this product.
-export function productKeys(p){
+// Search keys for harvesting a product's native card, each tagged with its kind. A slug that is the SKU in another
+// case (Magento: /ch10022_050 for CH10022_050) is the same key, so the title still gets its turn.
+export function searchKeys(p){
  const tail=s=>String(s||'').split(/[:/]/).filter(Boolean).at(-1)||'';
  let slug='';try{slug=decodeURIComponent(new URL(p.url).pathname.split('/').filter(Boolean).at(-1)||'');}catch{}
- return [...new Set([p.sku,slug.length>=4?slug:'',tail(p.id).length>=4&&/\d/.test(tail(p.id))?tail(p.id):'',p.title].map(x=>String(x||'').trim()).filter(Boolean))];
+ const seen=new Set();
+ return [['sku',p.sku],['slug',slug.length>=4?slug:''],['id',tail(p.id).length>=4&&/\d/.test(tail(p.id))?tail(p.id):''],['title',p.title]]
+  .map(([kind,v])=>({kind,value:String(v||'').trim()})).filter(k=>k.value&&!seen.has(k.value.toLowerCase())&&seen.add(k.value.toLowerCase()));
 }
+export const productKeys=p=>searchKeys(p).map(k=>k.value);
 
 // ---------- HTML ----------
 const sigOf=n=>n&&n.type==='tag'?n.name+'.'+String(n.attribs?.class||'').trim().split(/\s+/).filter(Boolean).sort().join('.'):'#root';
@@ -79,7 +87,9 @@ function analyze(text,type,lookup,learned){
 }
 function groupsOf(a,lookup,learned){if(!a.groups)a.groups=a.kind==='json'?jsonCards(a.root,lookup,learned):htmlCards(a.text,lookup,learned);return a.groups;}
 // The results list: the learned shape if known, otherwise the largest repeating group.
-function pick(groups,learned){const pool=learned.sig?groups.filter(g=>g.sig===learned.sig):groups;return [...(pool.length?pool:groups)].sort((a,b)=>b.cards.length-a.cards.length||a.start-b.start)[0]||null;}
+// A shape confirmed by a product's own search is the results list: a page without it (a no-results page showing a
+// recommendations widget) has no results list, rather than the widget standing in for one.
+function pick(groups,learned){const pool=learned.sig?groups.filter(g=>g.sig===learned.sig):groups;if(learned.confirmed&&!pool.length)return null;return [...(pool.length?pool:groups)].sort((a,b)=>b.cards.length-a.cards.length||a.start-b.start)[0]||null;}
 
 // ---------- text edits outside the card region ----------
 const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -93,7 +103,12 @@ export function swapAll(text,pairs){
  const re=new RegExp([...map.keys()].sort((a,b)=>b.length-a.length).map(reEsc).join('|'),'g');
  return text.replace(re,m=>map.get(m));
 }
-export const replaceEcho=(text,from,to)=>swapAll(text,[[from,to]]);
+// The site may echo the query in another case (Magento shows 'ch10048_001' for CH10048_001).
+export function replaceEcho(text,from,to){
+ if(!from||to==null||from===to)return text;
+ const f=variants(String(from)),t=variants(String(to)),map=new Map();f.forEach((v,i)=>{if(v&&!map.has(v.toLowerCase()))map.set(v.toLowerCase(),t[i]);});
+ return text.replace(new RegExp([...map.keys()].sort((a,b)=>b.length-a.length).map(reEsc).join('|'),'gi'),m=>map.get(m.toLowerCase()));
+}
 // "54 מוצרים" / <span>54</span><span>פריטים</span>: the most repeated such number (ties: largest) is the original total,
 // one equal to the cards shown is the page count; anything else ("60 ספרים" in a menu, a mini-cart) is left alone.
 export function replaceCounts(texts,{total,shown,originalShown}){
@@ -134,7 +149,7 @@ export function createNativeSearch({concurrency=2,perMinute=12,now=Date.now}={})
   // Theme sections (Shopify section_id) render different card markup on the same path.
   const key=project.id+':'+target.pathname+':'+(target.searchParams.get('section_id')||''),learned=memory.get(key)||{};
   if(!seen.has(key))seen.set(key,new Map());const cardsSeen=seen.get(key);
-  const learn=g=>{if(!g||g.cards.length<2)return false;learned.sig=g.sig;learned.card=g.card;if(g.cards.length>=5)learned.pageSize=Math.max(learned.pageSize||0,g.cards.length);memory.set(key,learned);return true;};
+  const learn=g=>{if(!g||g.cards.length<2)return false;if(learned.confirmed&&g.sig!==learned.sig)return false;learned.sig=g.sig;learned.card=g.card;if(g.cards.length>=5)learned.pageSize=Math.max(learned.pageSize||0,g.cards.length);memory.set(key,learned);return true;};
   let original=analyze(text,type,lookup,learned),og=pick(groupsOf(original,lookup,learned),learned);
   learn(og);
   // A fragment/JSON answer with no product cards (e.g. a suggestions-only section) is not ours to fill.
@@ -151,20 +166,30 @@ export function createNativeSearch({concurrency=2,perMinute=12,now=Date.now}={})
    if(learned.card){original=analyze(text,type,lookup,learned);og=pick(groupsOf(original,lookup,learned),learned);}
   }
 
-  if(og)remember(cardsSeen,groupsOf(original,lookup,learned).filter(g=>!learned.sig||g.sig===learned.sig));
+  if(og&&learned.confirmed)remember(cardsSeen,groupsOf(original,lookup,learned).filter(g=>g.sig===learned.sig));
   // Each result's native card: already seen on this endpoint, else harvested from it (within the request budget).
   const harvest=async p=>{
    if(cardsSeen.has(p.id))return cardsSeen.get(p.id);
-   for(const k of productKeys(p).slice(0,2)){
+   // The key kind that last found a card on this endpoint goes first (a site that cannot search SKUs finds titles).
+   const keys=searchKeys(p).sort((a,b)=>(b.kind===learned.keyKind)-(a.kind===learned.keyKind)).slice(0,2);
+   for(const {kind,value:k} of keys){
     if(!allow(project.id))return null;
     const t=await fetchText(withQuery(url,param.name,k));if(!t)continue;
-    const a=analyze(t.text,t.type,lookup,learned),groups=groupsOf(a,lookup,learned);
-    remember(cardsSeen,groups.filter(g=>!learned.sig||g.sig===learned.sig));
-    for(const g of groups){const c=g.cards.find(c=>c.product.id===p.id);if(c)return {card:c,group:g,analysis:a,query:k};}
+    // Until a hit confirms the results list, a harvested page is read without the guessed shape.
+    const shape=learned.confirmed?learned:{},a=analyze(t.text,t.type,lookup,shape),groups=groupsOf(a,lookup,shape);
+    // HTML: the first list holding it (a widget comes later); JSON: the deepest node (an outer wrapper holds it too).
+    const hits=groups.map(g=>({g,c:g.cards.find(c=>c.product.id===p.id)})).filter(x=>x.c),depth=x=>x.g.sig.split('/').length;
+    const hit=a.kind==='json'?hits.sort((x,y)=>depth(y)-depth(x))[0]:hits[0];
+    if(hit&&!learned.confirmed){Object.assign(learned,{sig:hit.g.sig,card:hit.g.card,confirmed:true});if(hit.g.cards.length>=5)learned.pageSize=Math.max(learned.pageSize||0,hit.g.cards.length);
+     remember(cardsSeen,groupsOf(analyze(text,type,lookup,{}),lookup,{}).filter(g=>g.sig===learned.sig));} // the original's own cards, now known to be results
+    remember(cardsSeen,groups.filter(g=>learned.confirmed&&g.sig===learned.sig));
+    if(hit){learned.keyKind=kind;memory.set(key,learned);return {card:hit.c,group:hit.g,analysis:a,query:k};}
    }
    return null;
   };
-  const harvested=await pool(results,harvest);
+  // One at a time until a hit confirms the results list (so the original's cards are reused), then in parallel.
+  const harvested=[];while(!learned.confirmed&&harvested.length<results.length)harvested.push(await harvest(results[harvested.length]).catch(()=>null));
+  harvested.push(...await pool(results.slice(harvested.length),harvest));
   const good=harvested.filter(Boolean),fetched=good.filter(h=>h.analysis); // fetched ones carry a whole response usable as structure
   if(!og&&fetched.length&&!learned.sig){learned.sig=fetched[0].group.sig;learned.card=fetched[0].group.card;memory.set(key,learned);}
 
