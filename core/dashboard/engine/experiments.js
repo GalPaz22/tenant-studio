@@ -37,7 +37,7 @@ export async function assertNoConflict(exp, excludeId) {
     const others = (await db
         .collection("experiments")
         .find({
-        tenantApiKey: exp.tenantApiKey,
+        dbName: exp.dbName,
         status: { $in: ["approved", "running", "paused"] },
         ...(excludeId ? { _id: { $ne: new ObjectId(excludeId) } } : {}),
     })
@@ -100,10 +100,11 @@ export async function transition(id, to, by, note) {
         await ensureTenantExperimentIndexes(exp.dbName);
     }
     const db = await controlDb();
-    await db.collection("experiments").updateOne({ _id: new ObjectId(id) }, {
+    const updated = await db.collection("experiments").updateOne({ _id: new ObjectId(id), status: exp.status }, {
         $set: { status: to, ...(to === "approved" ? { approvedBy: by } : {}) },
         $push: { statusHistory: { status: to, at: new Date(), by, note } },
     });
+    if (!updated.matchedCount) throw new ConflictError("Experiment changed concurrently; refresh and retry");
     // Any transition into or out of "running" changes what the search hook must see.
     await publishActiveExperiments(exp.tenantApiKey);
     return (await getExperiment(id));

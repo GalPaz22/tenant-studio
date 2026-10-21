@@ -11,6 +11,9 @@ import { conciergeRoutes } from './dashboard/api/routes/concierge.js';
 import { agentRoutes } from './dashboard/api/routes/agent.js';
 import { proposalRoutes } from './dashboard/api/routes/proposals.js';
 import { executeAction } from './dashboard/optimization/actions.js';
+import { weeklyRoutes } from './dashboard/api/routes/weekly.js';
+import { refreshAllActiveKeys } from './dashboard/engine/publisher.js';
+import { expireWeeklyExperiments } from './dashboard/weekly/service.js';
 import { refreshAllActiveRuleKeys } from './dashboard/rules/publisher.js';
 
 // Invoke the same Studio operations in process. No optimizer service, loopback
@@ -78,7 +81,7 @@ export async function installCustomerDashboard(app, { operations, storage, resol
     try { const result = await handler(req, reply); if (!hijacked && !res.headersSent) res.json(result ?? null); }
     catch (error) { next(error); }
   })]));
-  for (const install of [dashboardRoutes, productRoutes, conciergeRoutes, agentRoutes, proposalRoutes]) await install(routes);
+  for (const install of [dashboardRoutes, productRoutes, conciergeRoutes, agentRoutes, weeklyRoutes, proposalRoutes]) await install(routes);
   routes.post('/optimization/actions/:id/execute', async (req, reply) => {
     try { return await executeAction(req.params.id, req.query.tenant, req.body?.by); }
     catch (error) { return reply.code(409).send({ error: error.message }); }
@@ -95,9 +98,9 @@ export async function installCustomerDashboard(app, { operations, storage, resol
     res.status(databaseError ? 503 : error.status || 400).json({ error: databaseError ? 'לא ניתן לקרוא כרגע את נתוני החנות' : error.message });
   });
   app.use('/api/customer-dashboard', router);
-  // Refresh saved exact-query rules only; this never creates changes or runs a model.
+  // Refresh saved rules and experiments, expire elapsed tests; never generate proposals or run a model.
   let refreshing = false;
-  const timer = setInterval(async () => { if (refreshing || !process.env.REDIS_URL) return; refreshing = true; try { await refreshAllActiveRuleKeys(); } catch {} finally { refreshing = false; } }, 30000);
+  const timer = setInterval(async () => { if (refreshing || !process.env.REDIS_URL) return; refreshing = true; try { await expireWeeklyExperiments(); await refreshAllActiveKeys(); await refreshAllActiveRuleKeys(); } catch {} finally { refreshing = false; } }, 30000);
   timer.unref();
   return () => clearInterval(timer);
 }

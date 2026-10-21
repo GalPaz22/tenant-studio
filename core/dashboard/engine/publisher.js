@@ -6,6 +6,8 @@ export function toWire(exp) {
     return {
         id: String(exp._id),
         layer: exp.layer,
+        delivery: exp.delivery || 'randomized',
+        expiresAt: exp.expiresAt || null,
         targeting: exp.targeting,
         trafficPct: exp.trafficPct,
         arms: exp.arms.map((a) => ({ key: a.key, weight: a.weight, patch: a.patch ?? {} })),

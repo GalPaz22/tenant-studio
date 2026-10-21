@@ -19,8 +19,11 @@ export const ExperimentStatus = z.enum([
 ]);
 // Config patch applied to the tenant store object for a variant arm.
 // Shapes by experiment type — a patch may combine keys when types compose.
-export const ArmPatch = z
+const BaseArmPatch = z
     .object({
+    demotedProductIds: z.array(z.string().min(1).max(150)).max(100).optional(),
+    productNotes: z.array(z.object({productId:z.string().min(1),text:z.string().min(1).max(120)}).strict()).max(20).optional(),
+    productBundles: z.array(z.object({productIds:z.array(z.string().min(1)).min(2).max(4),title:z.string().min(1).max(100)}).strict()).max(4).optional(),
     excludedProductIds: z.array(z.string().min(1).max(150)).max(100).optional(),
     productBoosts: z.record(z.string(), z.number().int().min(0).max(3)).optional(),
     pinnedResults: z
@@ -49,6 +52,7 @@ export const ArmPatch = z
         .optional(),
 })
     .strict();
+export const ArmPatch=BaseArmPatch.extend({queryPatches:z.array(z.object({query:z.string().min(1).max(200),patch:BaseArmPatch}).strict()).max(20).optional()});
 export const Arm = z.object({
     key: z.string().min(1), // "control" | "v1" | ...
     weight: z.number().positive(), // relative weight among arms

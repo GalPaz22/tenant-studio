@@ -16,6 +16,7 @@ function start(){
  const money=(value,currency)=>{if(value==null||value===''||!Number.isFinite(Number(value)))return '';try{return new Intl.NumberFormat(document.documentElement.lang||undefined,{style:'currency',currency:currency||config.currency||'ILS',maximumFractionDigits:2}).format(Number(value));}catch{return String(value);}};
  const queryFromLocation=()=>{const p=new URLSearchParams(location.search);return p.get('s')||p.get('q')||p.get('query')||p.get('search')||p.get('keyword')||'';};
  const resultsUrl=query=>{const u=new URL(location.href),q=String(query||'').trim(),base=new URL(config.storeOrigin),root=base.pathname.replace(/\/$/,'');u.hash='';if(platform==='woocommerce'){u.pathname=root+'/';u.search='';u.searchParams.set('s',q);u.searchParams.set('post_type','product');}else if(platform==='shopify'){u.pathname=root+'/search';u.search='';u.searchParams.set('q',q);u.searchParams.set('type','product');}else if(platform==='magento'){u.pathname=root+'/catalogsearch/result/';u.search='';u.searchParams.set('q',q);}else{u.search='';u.searchParams.set('q',q);}return u.pathname+u.search;};
+ const sessionId=()=>{const cookie=document.cookie.split('; ').find(v=>v.startsWith('semantix_session_id='));if(cookie)return cookie.slice('semantix_session_id='.length);const id=globalThis.crypto?.randomUUID?.()||String(Date.now())+Math.random().toString(36).slice(2);document.cookie='semantix_session_id='+id+'; path=/; SameSite=Lax; max-age=1800';return id;};
  let template=null,grid=null,status=null,more=null,cursor=null,controller=null,sequence=0;
  function rememberTemplate(){if(template)return template;const cards=all(document,CARD_SELECTORS);template=cards.find(c=>first(c,TITLE_SELECTORS)&&first(c,IMAGE_SELECTORS))?.cloneNode(true)||null;return template;}
  function findGrid(){return first(document,GRID_SELECTORS);}
@@ -42,13 +43,15 @@ function start(){
   const price=first(node,PRICE_SELECTORS);if(price){price.textContent=money(p.price,p.currency);if(Number(p.regularPrice)>Number(p.price)){const old=document.createElement('del');old.textContent=money(p.regularPrice,p.currency);price.append(' ',old);}}
   else{const target=title?.parentNode||node;const value=document.createElement('div');value.className='price';value.textContent=money(p.price,p.currency);target.append(value);}
   const old=first(node,OLD_PRICE_SELECTORS);if(old&&!(Number(p.regularPrice)>Number(p.price)))old.remove();
-  node.querySelectorAll('form,button,input,select,[data-product-id]').forEach(n=>n.remove());return node;
+  node.querySelectorAll('form,button,input,select,[data-product-id],[data-semantix-note],[data-semantix-bundle]').forEach(n=>n.remove());
+  if(p.explanation){const note=document.createElement('p');note.dataset.semantixNote='';note.textContent=String(p.explanation);note.style.cssText='font-size:.85em;line-height:1.6;opacity:.8';node.append(note);}
+  for(const group of p.complementaryProducts||[]){const box=document.createElement('div');box.dataset.semantixBundle='';box.style.cssText='padding:10px 0;font-size:.85em';const label=document.createElement('strong');label.textContent=group.title||'מוצרים משלימים';box.append(label);for(const product of group.products||[]){const target=safe(product.url);if(!target||new URL(target).origin!==new URL(config.storeOrigin).origin)continue;const link=document.createElement('a');link.href=target;link.textContent=String(product.name||'')+' '+money(product.price,product.currency);link.style.cssText='display:block;text-decoration:underline;margin-top:6px';box.append(link);}if(box.childElementCount>1)node.append(box);}return node;
  }
  async function run(query,append=false){
   query=String(query||'').trim();if(!query)return;ensureResults();controller?.abort();controller=new AbortController();const mine=++sequence;
   if(!append){cursor=null;grid.replaceChildren();}more.hidden=true;status.textContent='מחפש…';
   try{
-   const response=await fetch(config.endpoint,{method:'POST',credentials:'omit',signal:controller.signal,headers:{'Content-Type':'application/json',...(config.apiKey?{'X-API-Key':config.apiKey}:{})},body:JSON.stringify(append?{cursor,limit:24,modern:true}:{query,limit:24,modern:true})});
+   const response=await fetch(config.endpoint,{method:'POST',credentials:'omit',signal:controller.signal,headers:{'Content-Type':'application/json',...(config.apiKey?{'X-API-Key':config.apiKey}:{})},body:JSON.stringify({...((append?{cursor,limit:24,modern:true}:{query,limit:24,modern:true})),session_id:sessionId(),serpFeatures:['weekly-serp-v1']})});
    if(!response.ok)throw Error('search');const data=await response.json();if(mine!==sequence)return;const products=data.products||data.matches;if(!Array.isArray(products))throw Error('format');
    const nodes=products.map(card).filter(Boolean);if(append)grid.append(...nodes);else grid.replaceChildren(...nodes);
    cursor=data.nextCursor||data.pagination?.nextCursor||null;more.hidden=!cursor;status.textContent=nodes.length||grid.childElementCount?`${data.total??grid.childElementCount} מוצרים`:'לא נמצאו מוצרים';

@@ -12,7 +12,7 @@ export async function proposalRoutes(app) {
     app.get("/proposals", async (req) => {
         const { status = "pending", tenant } = req.query;
         const db = await controlDb();
-        const q = { status };
+        const q = { status, kind: { $ne: 'weeklyOptimization' } };
         // A store can hold several keys; proposals carry the store's dbName.
         if (tenant) {
             const t = await getTenantByApiKey(tenant);
@@ -32,6 +32,7 @@ export async function proposalRoutes(app) {
             .findOne({ _id: new ObjectId(id), status: "pending" }));
         if (!proposal)
             return reply.code(404).send({ error: "pending proposal not found" });
+        if (proposal.kind === 'weeklyOptimization') return reply.code(409).send({error:'יש להפעיל הצעה שבועית דרך פאנל הצעות תיקון'});
         if (proposal.kind === 'studioRevision') {
             const lock = await db.collection('proposals').updateOne({ _id: proposal._id, status: 'pending' }, { $set: { status: 'applying' } });
             if (lock.modifiedCount !== 1)
