@@ -35,7 +35,7 @@ export async function saveSearchLayout(store,body){
  const previous=await col.findOne(identity,{session});if((previous?.updatedAt?.toISOString?.()||null)!==layout.revision)throw fail('הסידור עודכן בינתיים. יש להריץ חיפוש מחדש לפני שמירה.',409);
  const all=[...layout.productIds,...layout.excludedProductIds],rows=all.length?await(await tenantDb(store.dbName)).collection('products').find({_id:{$in:all.map(x=>new ObjectId(x))}},{projection:fields,session}).toArray():[];
  if(rows.length!==all.length)throw fail('אחד המוצרים אינו שייך לחנות או אינו זמין עוד');
- if(rows.some(p=>layout.productIds.includes(String(p._id))&&!publicProduct(p).editable))throw fail('אין להוסיף לתוצאות מוצר מוסתר או שאזל מהמלאי');
+ if(rows.some(p=>layout.productIds.includes(String(p._id))&&!publicProduct(p).editable))throw fail('אין להוסיף לתוצאות מוצר מוסתר או שאינו מוצג בחנות');
  const unavailable=rows.filter(p=>layout.productIds.includes(String(p._id))&&(p.stockStatus||p.stock_status)==='outofstock');
  if(unavailable.length){const live=await liveSearch(store,layout.query);const liveIds=new Set(live.flatMap(p=>[p._id,p.id].filter(x=>x!=null).flatMap(x=>[String(x),String(x).split(':').pop()])));if(unavailable.some(p=>![p._id,p.id].filter(x=>x!=null).some(x=>liveIds.has(String(x)))))throw fail('מוצר שאזל מהמלאי ניתן לסידור רק אם הוא כבר מופיע בתוצאות המנוע');}
  patch={...(layout.productIds.length?{pinnedResults:[{query:layout.query,productIds:layout.productIds,enabled:true,matchType:'exact'}]}:{}),...(layout.excludedProductIds.length?{excludedProductIds:layout.excludedProductIds}:{})};
@@ -46,6 +46,7 @@ export async function saveSearchLayout(store,body){
  await db.collection('catalog_change_audits').insertOne({dbName:store.dbName,kind:'querySearchLayout',appliedBy:body.by,appliedAt:updatedAt,query:layout.query,before:previous?.patch||{},after:patch},{session});
  });}finally{await session.endSession();}
  let published=false;try{await publishActiveRules(store.apiKey);const redis=await getRedis();if(redis){const wire=JSON.parse(await redis.get(ACTIVE_RULES_KEY(store.apiKey))||'[]');published=active?wire.some(r=>r.condition?.patterns?.[0]===layout.query&&JSON.stringify(r.patch)===JSON.stringify(patch)):!wire.some(r=>r.condition?.patterns?.[0]===layout.query);}}catch{}
+ if(published&&layout.excludedProductIds.length){try{const response=await fetch(new URL('/health',process.env.SEARCH_SERVICE_URL||'https://api.semantix-ai.com'),{signal:AbortSignal.timeout(3000)});const health=await response.json();published=health.features?.querySearchLayouts===true;}catch{published=false;}}
  await clearSearchCache(store.dbName).catch(()=>{});
  return {saved:true,published,revision:updatedAt.toISOString()};
 }
