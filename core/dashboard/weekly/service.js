@@ -38,7 +38,7 @@ export async function requestWeeklyReview(store,by){
  try{if(existing){const locked=await db.collection('weekly_store_reviews').updateOne({_id:id,status:existing.status,generatedAt:existing.generatedAt},{$set:report,$unset:{error:''}});if(!locked.matchedCount){generationBusy=false;return {report:await db.collection('weekly_store_reviews').findOne({_id:id})};}}else await db.collection('weekly_store_reviews').insertOne({...report,_id:id});}
  catch(e){generationBusy=false;if(e.code===11000)return {report:await db.collection('weekly_store_reviews').findOne({dbName:store.dbName,period})};throw e;}
  // Report generation is asynchronous; no long-running Vercel request.
- void generateWeeklyReport(store,id,report).finally(()=>{generationBusy=false;});
+ void generateWeeklyReport(store,id,report).catch(()=>{console.error('[weekly review] could not persist final job state');}).finally(()=>{generationBusy=false;});
  return {report:{...report,_id:id}};
 }
 export async function generateWeeklyReport(store,id,report,{ask=askChatAgent,loadEvents=loadStoreEvents}={}){
