@@ -47,6 +47,7 @@ export function proposalFromPlan(plan, analysis, usedQueries=new Set()) {
    if(requestedScope.some(q=>!requested.includes(q)))throw Error('פעולה מחוץ לשאילתות ההצעה');
    let queries=requestedScope.filter(q=>action.productIds.every(id=>analysis.allowed.get(q)?.has(id)));
    if(action.queries&&queries.length!==requestedScope.length||!queries.length)throw Error('המוצר לא נצפה בשאילתות הפעולה');
+   if(action.type==='reorder'){queries=queries.filter(q=>{const delivered=analysis.rows.find(r=>r.query===q).delivered;return new Set(delivered).size!==delivered.length||action.productIds.some((id,i)=>delivered[i]!==id);});if(!queries.length)throw Error('סדר המוצרים כבר תואם להצעה בתוצאות שנצפו');}
    if(action.type==='bundle'){
      if(analysis.pairsTruncated)throw Error('נתוני המוצרים המשלימים חרגו ממגבלת המדידה');
      if(action.productIds.length<2||action.productIds.length>4)throw Error('מארז דורש 2–4 מוצרים');
