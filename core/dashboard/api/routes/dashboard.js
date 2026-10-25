@@ -19,7 +19,7 @@ export function invalidateDashboardReports(dbName) {
 export async function dashboardRoutes(app) {
     app.post("/dashboard/merchandising/publish", async (req, reply) => {
         const { tenant } = req.query;
-        const t = tenant ? await getTenantByApiKey(tenant) : null;
+        const t = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!t)
             return reply.code(400).send({ error: "Select a valid store" });
         await publishActiveRules(t.apiKey);
@@ -28,7 +28,7 @@ export async function dashboardRoutes(app) {
     });
     app.post("/dashboard/search", async (req, reply) => {
         const { tenant } = req.query;
-        const t = tenant ? await getTenantByApiKey(tenant) : null;
+        const t = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!t)
             return reply.code(400).send({ error: "Select a valid store" });
         const { query } = (req.body ?? {});
@@ -42,11 +42,11 @@ export async function dashboardRoutes(app) {
             return reply.code(502).send({ error: status ? e.message : "מנוע החיפוש אינו זמין כרגע" });
         }
     });
-    app.put('/dashboard/search-layout', async (req,reply)=>{const store=await getTenantByApiKey(req.query.tenant);if(!store)return reply.code(400).send({error:'יש לבחור חנות'});try{const result=await saveSearchLayout(store,req.body);invalidateDashboardReports(store.dbName);return result;}catch(error){return reply.code(error.status||500).send({error:error.message});}});
+    app.put('/dashboard/search-layout', async (req,reply)=>{const store=req.customerStore ?? await getTenantByApiKey(req.query.tenant);if(!store)return reply.code(400).send({error:'יש לבחור חנות'});try{const result=await saveSearchLayout(store,req.body);invalidateDashboardReports(store.dbName);return result;}catch(error){return reply.code(error.status||500).send({error:error.message});}});
     // One merchant-managed pin rule per exact query; agent-authored rules stay independent.
     app.put("/dashboard/pins", async (req, reply) => {
         const { tenant } = req.query;
-        const t = tenant ? await getTenantByApiKey(tenant) : null;
+        const t = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!t)
             return reply.code(400).send({ error: "Select a valid store" });
         const { query, productIds, revision } = (req.body ?? {});
@@ -101,7 +101,7 @@ export async function dashboardRoutes(app) {
     });
     app.get("/dashboard", async (req, reply) => {
         const { tenant, days = "30" } = req.query;
-        const t = tenant ? await getTenantByApiKey(tenant) : null;
+        const t = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!t)
             return reply.code(400).send({ error: "Select a valid store" });
         const count = Number(days);
@@ -126,7 +126,7 @@ export async function dashboardRoutes(app) {
     });
     app.get("/dashboard/catalog", async (req, reply) => {
         const { tenant, query = "" } = req.query;
-        const t = tenant ? await getTenantByApiKey(tenant) : null;
+        const t = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!t)
             return reply.code(400).send({ error: "Select a valid store" });
         if (typeof query !== "string" || query.length > 200)

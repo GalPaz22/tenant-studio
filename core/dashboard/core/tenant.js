@@ -85,3 +85,24 @@ export async function getTenantByApiKey(apiKey) {
         pinnedResults: d.credentials?.pinnedResults,
     };
 }
+
+/** Dashboard identity is the store database, independent of login/search keys. */
+export async function getTenantByDbName(dbName) {
+    if (typeof dbName !== 'string' || !dbName.trim()) return null;
+    const db = await coreUsersDb();
+    const d = await db.collection('users').findOne({ dbName }, {
+        sort: { platform: -1, _id: 1 },
+        projection: { apiKey: 1, dbName: 1, context: 1, 'credentials.softCategories': 1, 'credentials.softCategoriesBoosted': 1, 'credentials.pinnedResults': 1 },
+    });
+    if (!d) return null;
+    return {
+        dbName: d.dbName,
+        // Search/Redis integrations still use the store's private service key.
+        // It is optional for dashboard reads and is never the access identity.
+        apiKey: d.apiKey,
+        context: d.context,
+        softCategories: d.credentials?.softCategories,
+        softCategoriesBoosted: d.credentials?.softCategoriesBoosted,
+        pinnedResults: d.credentials?.pinnedResults,
+    };
+}

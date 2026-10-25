@@ -11,10 +11,11 @@ const fingerprint=p=>createHash('sha256').update(JSON.stringify(p)).digest('hex'
 const names=['overview','find_products','facet','get_product','categories','fields','field_values','suggest','search','measure_search','read_engine','inspect_query','shopper_clicks','list_rules','add_spelling','add_synonyms','link_term','remove_rule','rank_rule','tag_products','configure_search','db_fields','db_search','add_example','check_examples','list_versions','fetch_store_page'];
 const text=(v,max=200)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
 
-export async function customerTenant(apiKey){
- if(!text(apiKey,300))throw fail('נדרשת חנות מחוברת',401);
+export async function customerTenant(apiKey,dbName){
+ const byDbName=dbName!==undefined;
+ if(!text(byDbName?dbName:apiKey,300))throw fail('נדרשת חנות מחוברת',401);
  const client=await getMongo();
- const user=await client.db('users').collection('users').findOne({apiKey},{projection:{dbName:1}});
+ const user=await client.db('users').collection('users').findOne(byDbName?{dbName}:{apiKey},{projection:{dbName:1}});
  if(!user?.dbName)throw fail('החנות אינה מחוברת',404);return {dbName:user.dbName};
 }
 export async function customerProject(store,dbName,env=process.env){
@@ -55,10 +56,10 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
  });
  register('turn',async(req,res)=>{
   const started=performance.now(),timings={modelMs:0,modelCalls:0,analyticsMs:0,firstTextMs:null};
-  const {apiKey,message,history=[],analytics=null,analyticsDays=30}=req.body||{};
+  const {apiKey,dbName:requestedDbName,message,history=[],analytics=null,analyticsDays=30}=req.body||{};
   if(![7,30,90].includes(analyticsDays))throw fail('טווח אנליטיקות לא תקין');
   if(!text(message,3000)||!Array.isArray(history)||history.length>16||history.some(m=>!['user','assistant'].includes(m.role)||typeof m.text!=='string'||m.text.length>8000))throw fail('הודעה או היסטוריה לא תקינה');
-  const {dbName}=await resolveTenant(apiKey),projectId=await customerProjectId(store,dbName,process.env,recoverProject);
+  const {dbName}=await resolveTenant(apiKey,requestedDbName),projectId=await customerProjectId(store,dbName,process.env,recoverProject);
   await locked(projectId,async()=>{
    const current=validateCustomerProject(await store.read(projectId),dbName);
    const working={...current,messages:history.map(m=>({role:m.role,text:m.text}))},actions=[];
@@ -100,8 +101,8 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
   });
  });
  register('approve',async(req,res)=>{
-  const {apiKey,draftId}=req.body||{};if(typeof draftId!=='string'||!/^[a-f0-9-]{36}$/.test(draftId))throw fail('טיוטה לא תקינה');
-  const {dbName}=await resolveTenant(apiKey);let draft;try{draft=await drafts.read(draftId);}catch(error){if(error.code==='ENOENT')throw fail('הטיוטה לא נמצאה',404);throw error;}
+  const {apiKey,dbName:requestedDbName,draftId}=req.body||{};if(typeof draftId!=='string'||!/^[a-f0-9-]{36}$/.test(draftId))throw fail('טיוטה לא תקינה');
+  const {dbName}=await resolveTenant(apiKey,requestedDbName);let draft;try{draft=await drafts.read(draftId);}catch(error){if(error.code==='ENOENT')throw fail('הטיוטה לא נמצאה',404);throw error;}
   if(draft.dbName!==dbName)throw fail('הטיוטה לא נמצאה בחנות',404);
   await locked(draft.projectId,async()=>{
    const current=await store.read(draft.projectId);

@@ -8,10 +8,16 @@ require a separately deployed optimizer or OPS password.
 `/api/customer-dashboard/*` exposes measured analytics, catalog visibility/boosts,
 saved concierge history/settings, management chat history/progress and explicit
 proposal approval/rejection. The frontend's existing NextAuth session resolves
-the store key server-side. Studio independently authenticates
+the user's stored `dbName` server-side, without requiring a user API key. Studio independently authenticates
 `X-Studio-Customer-Token`, resolves the store in Mongo and verifies resource
 ownership before reading or writing. Unknown customer endpoints stay inside
 this boundary and cannot fall through to operator APIs.
+
+Deploy Studio before the frontend when adopting `dbName` requests. Studio retains
+legacy `tenant` key requests during rollout. An explicit `dbName` takes precedence
+over legacy query keys, and unknown/invalid scopes fail closed. Search publication
+still uses existing store integration keys internally where needed; those keys
+do not determine whether the customer can open the dashboard.
 
 `core/dashboard/` contains the dashboard domain services migrated from the
 previous optimizer service. The existing measured analytics/merchandising

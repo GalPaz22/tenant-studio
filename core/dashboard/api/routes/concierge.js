@@ -6,7 +6,7 @@ export async function conciergeRoutes(app, options = {}) {
     const services = options.services || defaults;
     const scoped = async (tenant) => tenant ? services.getTenantByApiKey(tenant) : null;
     app.get('/concierge/settings', async (req, reply) => {
-        const store = await scoped(req.query.tenant);
+        const store = req.customerStore ?? await scoped(req.query.tenant);
         if (!store)
             return reply.code(400).send({ error: 'יש לבחור חנות מחוברת' });
         try {
@@ -19,7 +19,7 @@ export async function conciergeRoutes(app, options = {}) {
         }
     });
     app.put('/concierge/settings', async (req, reply) => {
-        const store = await scoped(req.query.tenant);
+        const store = req.customerStore ?? await scoped(req.query.tenant);
         if (!store)
             return reply.code(400).send({ error: 'יש לבחור חנות מחוברת' });
         const raw = req.body;
@@ -36,7 +36,7 @@ export async function conciergeRoutes(app, options = {}) {
         }
     });
     app.get('/concierge/conversations', async (req, reply) => {
-        const input = req.query, store = await scoped(input.tenant);
+        const input = req.query, store = req.customerStore ?? await scoped(input.tenant);
         if (!store)
             return reply.code(400).send({ error: 'יש לבחור חנות מחוברת' });
         let options;
@@ -59,7 +59,7 @@ export async function conciergeRoutes(app, options = {}) {
             }) };
     });
     app.get('/concierge/conversations/:id', async (req, reply) => {
-        const store = await scoped(req.query.tenant), id = req.params.id;
+        const store = req.customerStore ?? await scoped(req.query.tenant), id = req.params.id;
         if (!store)
             return reply.code(400).send({ error: 'יש לבחור חנות מחוברת' });
         if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id))

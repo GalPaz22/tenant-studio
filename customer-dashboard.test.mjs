@@ -15,7 +15,7 @@ test('Studio dashboard authenticates independently, scopes object identities and
     findOne: async filter => { checks.push({ name, collection, filter }); return null; },
   }) }) });
   const app = express(); app.use(express.json());
-  const close = await installCustomerDashboard(app, { operations: {}, database, resolveTenant: async key => key === 'a' ? { dbName: 'own-store' } : null });
+  const close = await installCustomerDashboard(app, { operations: {}, database, resolveTenant: async key => key === 'a' ? { dbName: 'own-store', apiKey: 'a' } : null, resolveStore: async dbName => dbName === 'own-store' ? { dbName } : null });
   app.use('/api', (_req, res) => res.json({ operator: true }));
   const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}/api/customer-dashboard`;
@@ -26,7 +26,8 @@ test('Studio dashboard authenticates independently, scopes object identities and
     assert.deepEqual(await (await read('/health')).json(), { ok: true, engine: 'tenant-studio' });
     assert.equal((await read('/agent/runs')).status, 401);
     assert.equal((await read('/agent/runs?tenant=foreign')).status, 401);
-    assert.equal((await read(`/agent/runs/${id}?tenant=a&dbName=foreign`)).status, 404);
+    assert.equal((await read(`/agent/runs/${id}?tenant=a&dbName=foreign`)).status, 401);
+    assert.equal((await read(`/agent/runs/${id}?dbName=own-store&tenant=foreign`)).status, 404);
     assert.equal(checks.at(-1).name, 'control_plane');
     assert.deepEqual(checks.at(-1).filter.$or[0], { dbName: 'own-store' });
     assert.equal((await read('/projects?tenant=a')).status, 404);
@@ -73,7 +74,7 @@ test('Studio owns async customer history and leaves product requests pending for
     const started = await startAgentRun('own', { request: 'קדם ריף', days: 30 });
     assert.equal(started.status, 'running'); await started.done;
     assert.equal(documents[0].status, 'completed'); assert.equal(documents[0].engine, 'tenant-studio');
-    assert.equal(sent.apiKey, 'own'); assert.equal(sent.history[0].text, 'הודעה קודמת שלי');
+    assert.equal(sent.dbName, 'own-store'); assert.equal(sent.apiKey, undefined); assert.equal(sent.history[0].text, 'הודעה קודמת שלי');
     assert.equal(proposals[0].status, 'pending'); assert.equal(proposals[0].dbName, 'own-store');
     assert.equal(proposals[0].boostChange.products[0]._id, String(productId)); assert.deepEqual(writes, []);
   } finally { configureDashboardStorage(null); }

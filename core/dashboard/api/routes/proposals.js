@@ -14,10 +14,10 @@ export async function proposalRoutes(app) {
         const db = await controlDb();
         const q = { status, kind: { $ne: 'weeklyOptimization' } };
         // A store can hold several keys; proposals carry the store's dbName.
-        if (tenant) {
-            const t = await getTenantByApiKey(tenant);
+        if (req.customerStore || tenant) {
+            const t = req.customerStore ?? await getTenantByApiKey(tenant);
             if (t)
-                q.$or = [{ tenantApiKey: tenant }, { dbName: t.dbName }, { "draftExperiment.dbName": t.dbName }];
+                q.$or = [{ dbName: t.dbName }, { "draftExperiment.dbName": t.dbName }, { "draftRule.dbName": t.dbName }, ...(t.apiKey ? [{ tenantApiKey: t.apiKey }] : [])];
             else
                 q.tenantApiKey = tenant;
         }
@@ -38,7 +38,7 @@ export async function proposalRoutes(app) {
             if (lock.modifiedCount !== 1)
                 return reply.code(409).send({ error: 'proposal was already reviewed' });
             try {
-                const response = await studioRequest('approve', { apiKey: proposal.tenantApiKey, draftId: proposal.studioDraftId }, AbortSignal.timeout(120000));
+                const response = await studioRequest('approve', { dbName: req.customerStore?.dbName || proposal.dbName, draftId: proposal.studioDraftId }, AbortSignal.timeout(120000));
                 const data = await response.json();
                 if (data.saved !== true)
                     throw Error('הסטודיו לא אישר שמירה');

@@ -19,7 +19,7 @@ export async function productRoutes(app, options = {}) {
     const services = options.services ?? productServices;
     app.get("/dashboard/products", async (req, reply) => {
         const { tenant, query = "", visibility = "all", promotion = "all", page = "1" } = req.query;
-        const store = tenant ? await getTenantByApiKey(tenant) : null;
+        const store = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!store)
             return reply.code(400).send({ error: "Select a valid store" });
         const pageNumber = Number(page), limit = 25;
@@ -39,7 +39,7 @@ export async function productRoutes(app, options = {}) {
     });
     app.put("/dashboard/products/boost", async (req, reply) => {
         const { tenant } = req.query;
-        const store = tenant ? await services.getTenantByApiKey(tenant) : null;
+        const store = req.customerStore ?? (tenant ? await services.getTenantByApiKey(tenant) : null);
         if (!store)
             return reply.code(400).send({ error: "Select a valid store" });
         const input = ProductBoostInput.safeParse(req.body);
@@ -62,7 +62,7 @@ export async function productRoutes(app, options = {}) {
     });
     app.put("/dashboard/products/visibility", async (req, reply) => {
         const { tenant } = req.query;
-        const store = tenant ? await getTenantByApiKey(tenant) : null;
+        const store = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
         if (!store)
             return reply.code(400).send({ error: "Select a valid store" });
         const input = ProductVisibilityInput.safeParse(req.body);

@@ -22,8 +22,8 @@ export async function agentRoutes(app) {
     app.post("/agent/run", async (req, reply) => {
         const { tenant } = req.query;
         const { request, query, review, conversationId, days } = (req.body ?? {});
-        if (!tenant)
-            return reply.code(400).send({ error: "tenant (apiKey) query param required" });
+        if (!req.customerStore && !tenant)
+            return reply.code(400).send({ error: "Store scope required" });
         if (days !== undefined && ![7, 30, 90].includes(days))
             return reply.code(400).send({ error: 'Invalid analytics window' });
         if (request !== undefined && (typeof request !== "string" || request.length > 2000))
@@ -31,7 +31,7 @@ export async function agentRoutes(app) {
         if (query !== undefined && (typeof query !== "string" || !query.trim() || query.length > 200))
             return reply.code(400).send({ error: "query must be text of at most 200 characters" });
         try {
-            const started = await startAgentRun(tenant, { request, query, days, review: review === true, conversationId: typeof conversationId === "string" ? conversationId : undefined, trigger: "manual" });
+            const started = await startAgentRun(req.customerStore || tenant, { request, query, days, review: review === true, conversationId: typeof conversationId === "string" ? conversationId : undefined, trigger: "manual" });
             return { runId: started.runId, status: started.status, conversationId: started.conversationId };
         }
         catch (e) {
@@ -41,8 +41,8 @@ export async function agentRoutes(app) {
     });
     app.get("/agent/runs", async (req) => {
         const { tenant } = req.query;
-        const t = tenant ? await getTenantByApiKey(tenant) : null;
-        const q = t ? { $or: [{ tenantApiKey: tenant }, { dbName: t.dbName }] } : tenant ? { tenantApiKey: tenant } : {};
+        const t = req.customerStore ?? (tenant ? await getTenantByApiKey(tenant) : null);
+        const q = t ? { $or: [{ dbName: t.dbName }, ...(t.apiKey ? [{ tenantApiKey: t.apiKey }] : [])] } : tenant ? { tenantApiKey: tenant } : {};
         const runs = await (await controlDb()).collection("agent_runs").find(q).project({ steps: 0 }).sort({ startedAt: -1 }).limit(80).toArray();
         return withArtifacts(runs);
     });

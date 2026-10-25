@@ -17,9 +17,10 @@ export async function stopAgentRun(id) {
   active.get(id)?.abort();
   return changed.matchedCount === 1;
 }
-export async function startAgentRun(apiKey, opts = {}) {
-  const tenant = await getTenantByApiKey(apiKey);
-  if (!tenant) throw Error('Unknown store');
+export async function startAgentRun(identity, opts = {}) {
+  const tenant = typeof identity === 'object' && identity !== null ? identity : await getTenantByApiKey(identity);
+  if (!tenant?.dbName) throw Error('Unknown store');
+  const apiKey = tenant.apiKey;
   const db = await controlDb(), locks = db.collection('agent_run_locks'), runs = db.collection('agent_runs');
   const id = new ObjectId(), runId = String(id), now = new Date();
   try {
@@ -61,7 +62,7 @@ export async function startAgentRun(apiKey, opts = {}) {
       if (controller.signal.aborted) throw Error('Stopped');
       const history = previous.reverse().flatMap(row => [{ role: 'user', text: String(row.request || '').slice(0, 2000) }, { role: 'assistant', text: String(row.summary || '').slice(0, 8000) }]);
       const message = [opts.query ? `בדיקת החיפוש ״${opts.query}״.` : '', opts.request || (opts.review ? 'סקור את ביצועי החיפוש והצע שיפורים מבוססים. הכן שינויים לאישור בלבד.' : 'בדוק את החיפוש לפי נתוני החנות.')].filter(Boolean).join(' ');
-      const result = await runStudioTurn({ apiKey, message, history, analyticsDays: opts.days || 30 }, controller.signal, async event => {
+      const result = await runStudioTurn({ dbName: tenant.dbName, message, history, analyticsDays: opts.days || 30 }, controller.signal, async event => {
         if (controller.signal.aborted) throw Error('Stopped');
         if (event.type === 'answer_reset') { feed.text = ''; feed.provisional = false; emit({ type: 'reset' }); return; }
         if (event.type === 'answer_delta') {

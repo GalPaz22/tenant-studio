@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { ObjectId } from 'mongodb';
 import { getMongo, getRedis, configureDashboardStorage } from './dashboard/core/db.js';
-import { getTenantByApiKey } from './dashboard/core/tenant.js';
+import { getTenantByApiKey, getTenantByDbName } from './dashboard/core/tenant.js';
 import { configureStudioTransport } from './dashboard/agent/studio-client.js';
 import { dashboardRoutes } from './dashboard/api/routes/dashboard.js';
 import { productRoutes } from './dashboard/api/routes/products.js';
@@ -40,7 +40,7 @@ export function studioOperationTransport(operations) {
   });
 }
 
-export async function installCustomerDashboard(app, { operations, storage, resolveTenant = getTenantByApiKey, database = getMongo } = {}) {
+export async function installCustomerDashboard(app, { operations, storage, resolveTenant = getTenantByApiKey, resolveStore = getTenantByDbName, database = getMongo } = {}) {
   if (storage) configureDashboardStorage(storage);
   configureStudioTransport(studioOperationTransport(operations));
   const router = express.Router();
@@ -54,13 +54,19 @@ export async function installCustomerDashboard(app, { operations, storage, resol
     catch { res.status(503).json({ ok: false, engine: 'tenant-studio' }); }
   });
   // Independently enforce store ownership, even when the caller has the service
-  // token. A customer API key can never select another database or another run.
+  // token. Only the authenticated frontend supplies the user's stored dbName.
+  // Retain tenant-key calls for older frontends during a rolling deployment.
   router.use(async (req, res, next) => {
     try {
-      if (typeof req.query.tenant !== 'string' || !req.query.tenant) return res.status(401).json({ error: 'נדרשת חנות מחוברת' });
-      const store = await resolveTenant(req.query.tenant);
+      const byDbName = req.query.dbName !== undefined;
+      const identity = byDbName ? req.query.dbName : req.query.tenant;
+      if (typeof identity !== 'string' || !identity.trim()) return res.status(401).json({ error: 'נדרשת חנות מחוברת' });
+      const store = await (byDbName ? resolveStore(identity) : resolveTenant(identity));
       if (!store?.dbName) return res.status(401).json({ error: 'החנות אינה מחוברת' });
       req.customerStore = store;
+      // Legacy domain handlers may need a private key for search publication.
+      // It is resolved on the server, never accepted alongside a dbName scope.
+      req.query.tenant = store.apiKey;
       const parts = req.path.split('/').filter(Boolean);
       const id = parts[0] === 'concierge' ? null : parts.find(part => /^[a-f\d]{24}$/i.test(part));
       if (id) {
@@ -83,7 +89,7 @@ export async function installCustomerDashboard(app, { operations, storage, resol
   })]));
   for (const install of [dashboardRoutes, productRoutes, conciergeRoutes, agentRoutes, weeklyRoutes, proposalRoutes]) await install(routes);
   routes.post('/optimization/actions/:id/execute', async (req, reply) => {
-    try { return await executeAction(req.params.id, req.query.tenant, req.body?.by); }
+    try { return await executeAction(req.params.id, req.customerStore.apiKey, req.body?.by); }
     catch (error) { return reply.code(409).send({ error: error.message }); }
   });
   routes.post('/optimization/actions/:id/dismiss', async (req, reply) => {
