@@ -14,7 +14,9 @@ export async function workOnce(store,{owner,projectId=null,seed=seedCrawl,run=ru
   const project={id,url:job.target.url,existingClient:job.target.dbName?{dbName:job.target.dbName}:null};
   const fresh=await seed(project,{sources:settings.sources,clicks:readClickedUrls,catalogUrls:readCatalogUrls,spec:job.target.spec||null,...seedOptions});
   // Pages already crawled stay; only new pages are queued.
-  const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(u.split('/').pop()));
+  // A requested reseed is a fresh pass, including previously crawled URLs (prices/stock may have changed).
+  // Only an automatic queue recovery skips pages we already have.
+  if(!job.reseedRequested){const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(u.split('/').pop()));}
   state={...state,...fresh,products:state.products,errors:state.errors,startedAt:state.startedAt||fresh.startedAt,next:0};
   await store.save(state,{queue:true});await store.control(id,{reseedRequested:false});
   log(id,'queue',state.queue.length,JSON.stringify(state.sources));
