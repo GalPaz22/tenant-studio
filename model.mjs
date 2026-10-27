@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import {createHash} from 'node:crypto';
 import {validateHooks} from './core/tenant-hooks.mjs';
-export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.1-flash-lite';
+export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.5-flash-lite';
 export const askChatAgent=prompt=>askAgent(prompt,{model:chatModel(),reasoning:false});
 // The studio agent: gemini-3.8-flash by default (fast multi-step tool use); the reviewer and planner stay on Pro.
 // Override with STUDIO_AGENT_MODEL (e.g. gemini-3.1-pro-preview for deeper, slower turns).

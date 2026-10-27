@@ -1,0 +1,1679 @@
+{
+ "tenant": "steimatzky",
+ "projectId": "319319f4-d92b-442c-a3c5-20e27c8e2060",
+ "revisionBefore": 32,
+ "revisionAfter": 33,
+ "generatedAt": "2026-10-27",
+ "window": {
+  "from": "2026-09-27",
+  "to": "2026-10-27",
+  "excludedSessions": [
+   "studio-audit-20261014"
+  ]
+ },
+ "queriesAudited": 243,
+ "clickedInTop12": {
+  "before": 342,
+  "after": 353,
+  "of": 547,
+  "note": "in-sample: popularity is computed from the same 30 days of clicks"
+ },
+ "hiddenClicked": [
+  {
+   "id": "online:iw:IL:011325798",
+   "name": "הטבעיים 4 דם רע",
+   "clicks": 313,
+   "queries": [
+    "הטבעיים",
+    "דם רע",
+    "פאוורלס",
+    "lynn painter"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:057260009",
+   "name": "קינדל אמזון פייפרוויט ”7   דור 12  16 ג’יגה-ביט  2024 -ללא פרסומות",
+   "clicks": 112,
+   "queries": [
+    "קינדל",
+    "kindle"
+   ],
+   "sitePage": 404,
+   "siteAvailability": null
+  },
+  {
+   "id": "online:iw:IL:011250072",
+   "name": "המשקיע הנבון מהדורה חדשה",
+   "clicks": 95,
+   "queries": [
+    "המשקיע הנבון",
+    "שר הטבעות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:012193009",
+   "name": "הבחורים של טומן 1 לכבוש את 13",
+   "clicks": 83,
+   "queries": [
+    "הבחורים של טומן",
+    "לכבוש את 13"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:025630418",
+   "name": "ONYX STORM N/E (FOURTH WING #3)",
+   "clicks": 59,
+   "queries": [
+    "fourth wing",
+    "onyx storm"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012193354",
+   "name": "אוניברסיטת אורלינס 1 ההצעה",
+   "clicks": 55,
+   "queries": [
+    "ההצעה"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:013620789",
+   "name": "לחשוב מהר לחשוב לאט",
+   "clicks": 49,
+   "queries": [
+    "לחשוב מהר לחשוב לאט",
+    "לחשוב מהר"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:020090523",
+   "name": "RED RISING #1",
+   "clicks": 47,
+   "queries": [
+    "red rising"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011360955",
+   "name": "השכן שלך רוצח",
+   "clicks": 40,
+   "queries": [
+    "lego",
+    "השכן שלך רוצח"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:010320007",
+   "name": "רדופה חלק א      המאפיה האיטלקית 2",
+   "clicks": 36,
+   "queries": [
+    "ליליאן סלמה נחום",
+    "רדופה"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011374463",
+   "name": "משחקי הרעב 1 מהדורה חדשה 2020",
+   "clicks": 33,
+   "queries": [
+    "משחקי הרעב"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011324425",
+   "name": "הארי פוטר הסידרה המלאה מארז 7 ספרים",
+   "clicks": 28,
+   "queries": [
+    "הארי פוטר"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012010587",
+   "name": "ליל הכלולות פרק בונוס שבויה בין הלהבות",
+   "clicks": 23,
+   "queries": [
+    "עדן בל"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011310053",
+   "name": "אטלס עממי מ’11 לבי”ס יסודיים וחטה”ב",
+   "clicks": 22,
+   "queries": [
+    "אטלס"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:025630392",
+   "name": "DEAL (OFF CAMPUS 1)",
+   "clicks": 22,
+   "queries": [
+    "off campus",
+    "the deal"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011580242",
+   "name": "כל החיים לפניו מהד’ חדשה",
+   "clicks": 19,
+   "queries": [
+    "כל החיים לפניו"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:012192993",
+   "name": "פיתוי מתוק",
+   "clicks": 17,
+   "queries": [
+    "קורה ריילי",
+    "שקופה"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011374719",
+   "name": "ניצחון",
+   "clicks": 16,
+   "queries": [
+    "הרלן קובן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:105800056",
+   "name": "רמיקוב פורטונה ישראל",
+   "clicks": 15,
+   "queries": [
+    "רמיקוב"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:025630394",
+   "name": "SCORE  (OFF CAMPUS 3)",
+   "clicks": 14,
+   "queries": [
+    "off campus"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:105800135",
+   "name": "רמיקוב וינטג’",
+   "clicks": 14,
+   "queries": [
+    "רמיקוב"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011620110",
+   "name": "תנ”ך מהדורת המעלות ורוד    תנך",
+   "clicks": 13,
+   "queries": [
+    "תנ״ך"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:025630393",
+   "name": "MISTAKE  (OFF CAMPUS 2 )",
+   "clicks": 12,
+   "queries": [
+    "off campus"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:106910131",
+   "name": "חלומות יום הולדת אריזת פח",
+   "clicks": 12,
+   "queries": [
+    "חלומות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012193037",
+   "name": "לוקה ויטיאלו",
+   "clicks": 11,
+   "queries": [
+    "קורה ריילי"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:010320030",
+   "name": "השפעה רעה המאפיה האיטלקית 3",
+   "clicks": 10,
+   "queries": [
+    "ליליאן סלמה נחום"
+   ],
+   "sitePage": 404,
+   "siteAvailability": null
+  },
+  {
+   "id": "online:iw:IL:023452143",
+   "name": "JUJUTSU KAISEN VOL 25",
+   "clicks": 10,
+   "queries": [
+    "jujutsu kaisen",
+    "attack on titan"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011360872",
+   "name": "כסף איך לנצח את המשחק",
+   "clicks": 10,
+   "queries": [
+    "כסף"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:020021772",
+   "name": "GOD OF FURY (LEGACY OF GODS #5)",
+   "clicks": 9,
+   "queries": [
+    "rina kent"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011562911",
+   "name": "חולית כריכת הסרט",
+   "clicks": 9,
+   "queries": [
+    "חולית"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:012193186",
+   "name": "המלכים של איטליה 5 בתולת המאפיה",
+   "clicks": 9,
+   "queries": [
+    "sarah j maas"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011360827",
+   "name": "להצליח בניהול השקעות",
+   "clicks": 9,
+   "queries": [
+    "השקעות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:013372084",
+   "name": "טארוט הקריאה הפתוחה",
+   "clicks": 9,
+   "queries": [
+    "טארוט"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011373940",
+   "name": "אווטאר ההבטחה 1 כשף האוויר האחרון קומיקס",
+   "clicks": 8,
+   "queries": [
+    "אווטאר"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011374904",
+   "name": "תשע בנובמבר",
+   "clicks": 8,
+   "queries": [
+    "קולין הובר"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011374079",
+   "name": "וידוי /קולין הובר",
+   "clicks": 8,
+   "queries": [
+    "קולין הובר"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:025630435",
+   "name": "LEGACY COLLECTOR’S EDITION (OFF CAMPUS 5)",
+   "clicks": 8,
+   "queries": [
+    "off campus",
+    "the deal"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011325155",
+   "name": "יותר טוב מהסרטים המסיבה סיפורו של ווס (ספר חינם מחיר מתעדכן בקופה)",
+   "clicks": 8,
+   "queries": [
+    "יותר טוב מהסרטים"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011375217",
+   "name": "ספיידרמן כאוס קוסמי 3 קומיקס",
+   "clicks": 8,
+   "queries": [
+    "ספיידרמן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:012001917",
+   "name": "מנוי ל-10 ספרים דיגיטליים",
+   "clicks": 7,
+   "queries": [
+    "עיר החרמש",
+    "כיבוי אורות",
+    "ספלנדור"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012010433",
+   "name": "הצל ששומר עליי פרק בונוס מתנה (מחיר מתעדכן אוטומטית בקופה)",
+   "clicks": 7,
+   "queries": [
+    "אבישג"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023451958",
+   "name": "ONE PIECE OMNIBUS VOL 02",
+   "clicks": 7,
+   "queries": [
+    "one piece"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012193093",
+   "name": "לשנוא אותו 1 בני קרטר 1",
+   "clicks": 7,
+   "queries": [
+    "קלואי וולש"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:023452274",
+   "name": "HUNTER X HUNTER 3 IN 1 VOL 02",
+   "clicks": 6,
+   "queries": [
+    "מנגה"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023451766",
+   "name": "ONE PIECE OMNIBUS VOL 32",
+   "clicks": 6,
+   "queries": [
+    "one piece"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011620204",
+   "name": "תנ”ך מהדורת המעלות סגול   תנך",
+   "clicks": 6,
+   "queries": [
+    "תנ״ך"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011250407",
+   "name": "פרחים לשבת",
+   "clicks": 5,
+   "queries": [
+    "אבינתן אור"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:012000438",
+   "name": "עדויות ללא גבולות",
+   "clicks": 5,
+   "queries": [
+    "קלפים ללא גבולות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011251627",
+   "name": "מר הפקרה",
+   "clicks": 5,
+   "queries": [
+    "מר הפקרה"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023452416",
+   "name": "JUJUTSU KAISEN VOL 30",
+   "clicks": 5,
+   "queries": [
+    "jujutsu kaisen",
+    "blue lock"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:020021910",
+   "name": "FIRST AND FOREVER",
+   "clicks": 5,
+   "queries": [
+    "lynn painter"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012300506",
+   "name": "שחמט למתחילים",
+   "clicks": 5,
+   "queries": [
+    "שחמט"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:020074987",
+   "name": "BLUE LOCK 1",
+   "clicks": 5,
+   "queries": [
+    "blue lock"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011620289",
+   "name": "קרוב אליך",
+   "clicks": 4,
+   "queries": [
+    "קרוב אלייך"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023451873",
+   "name": "JUJUTSU KAISEN 0",
+   "clicks": 4,
+   "queries": [
+    "jujutsu kaisen"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011324878",
+   "name": "הטעות הגדולה של איינשטיין",
+   "clicks": 4,
+   "queries": [
+    "שר הטבעות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:020021943",
+   "name": "TEMPTING VENOM (VIPERS #3)",
+   "clicks": 4,
+   "queries": [
+    "rina kent"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:017410018",
+   "name": "מעשה בחמישה בלונים ספר אינטראקטיבי מהדורה חדשה",
+   "clicks": 4,
+   "queries": [
+    "מעשה בחמישה בלונים"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:010500295",
+   "name": "אשה בורחת מבשורה",
+   "clicks": 4,
+   "queries": [
+    "דוד גרוסמן",
+    "דויד גרוסמן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011561413",
+   "name": "בית הלשכה חולית",
+   "clicks": 4,
+   "queries": [
+    "חולית"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011400502",
+   "name": "יומן מסע זוגי",
+   "clicks": 3,
+   "queries": [
+    "יומן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012011027",
+   "name": "מרחק נגיעה",
+   "clicks": 3,
+   "queries": [
+    "אם יום אחד"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011052294",
+   "name": "תתפשטי",
+   "clicks": 3,
+   "queries": [
+    "מיינדפאק"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023452219",
+   "name": "ONE PIECE OMNIBUS VOL 03",
+   "clicks": 3,
+   "queries": [
+    "one piece"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011561624",
+   "name": "איתמר וכובע הקסמים השחור",
+   "clicks": 3,
+   "queries": [
+    "גרוסמן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011400387",
+   "name": "בעקבות השחמט",
+   "clicks": 3,
+   "queries": [
+    "שחמט"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:106910410",
+   "name": "דאבל ספיידרמן משחק קופסא",
+   "clicks": 3,
+   "queries": [
+    "ספיידרמן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:013372822",
+   "name": "קריאה בקלפי טארוט למתקדמים",
+   "clicks": 3,
+   "queries": [
+    "טארוט"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:020075089",
+   "name": "BLUE LOCK EPISODE NAGI 1",
+   "clicks": 3,
+   "queries": [
+    "blue lock"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012011006",
+   "name": "מלונות ספייד 1 השחקן",
+   "clicks": 2,
+   "queries": [
+    "האריה האגדי"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023451966",
+   "name": "ONE PIECE OMNIBUS VOL 18",
+   "clicks": 2,
+   "queries": [
+    "one piece"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023451855",
+   "name": "JUJUTSU KAISEN VOL 03",
+   "clicks": 2,
+   "queries": [
+    "jujutsu kaisen"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:023452206",
+   "name": "JUJUTSU KAISEN VOL 11",
+   "clicks": 2,
+   "queries": [
+    "jujutsu kaisen"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011561098",
+   "name": "האח החדש של איתמר",
+   "clicks": 2,
+   "queries": [
+    "גרוסמן"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:020021770",
+   "name": "GOD OF WRATH (LEGACY OF GODS #3)",
+   "clicks": 2,
+   "queries": [
+    "rina kent"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:013372700",
+   "name": "חלומות כדרך חיים",
+   "clicks": 2,
+   "queries": [
+    "חלומות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:020870874",
+   "name": "PRACTICE MAKES PERFECT",
+   "clicks": 2,
+   "queries": [
+    "better than the movies"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011373184",
+   "name": "בני לוריאן 2 כוחה של מספר שש",
+   "clicks": 2,
+   "queries": [
+    "שש בש"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:105800211",
+   "name": "כוח המשיכה",
+   "clicks": 2,
+   "queries": [
+    "משחקים"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:011052524",
+   "name": "בת הרימון",
+   "clicks": 2,
+   "queries": [
+    "בת הדיין"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:013372833",
+   "name": "כל מה שבינינו",
+   "clicks": 2,
+   "queries": [
+    "בת הדיין"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:020075086",
+   "name": "BLUE LOCK 2",
+   "clicks": 2,
+   "queries": [
+    "blue lock"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011374416",
+   "name": "מוח של רוצח",
+   "clicks": 2,
+   "queries": [
+    "השכן שלך רוצח"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011520987",
+   "name": "הזחל הרעב",
+   "clicks": 2,
+   "queries": [
+    "הזחל הרעב"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:013621164",
+   "name": "ככה לא מתנהגים",
+   "clicks": 1,
+   "queries": [
+    "המשקיע הנבון"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:021400209",
+   "name": "BROKEN COUNTRY",
+   "clicks": 1,
+   "queries": [
+    "the love hypothesis"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:025630383",
+   "name": "SAY YOU’LL REMEMBER ME",
+   "clicks": 1,
+   "queries": [
+    "the love hypothesis"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:010032651",
+   "name": "סיפורי ממלכת נרניה בכרך אחד",
+   "clicks": 1,
+   "queries": [
+    "שר הטבעות"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:020790121",
+   "name": "HEART THE LOVER",
+   "clicks": 1,
+   "queries": [
+    "verity"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "InStock"
+  },
+  {
+   "id": "online:iw:IL:013622273",
+   "name": "חוק המשיכה",
+   "clicks": 1,
+   "queries": [
+    "הפסיכולוגיה של הכסף"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:012923243",
+   "name": "טיפול בעברייני מין בישראל",
+   "clicks": 1,
+   "queries": [
+    "פטיפון"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:021680051",
+   "name": "IRRESISTIBLE URGE TO FALL FOR YOUR ENEMY #1",
+   "clicks": 1,
+   "queries": [
+    "trust fall"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:020075087",
+   "name": "BLUE LOCK 3",
+   "clicks": 1,
+   "queries": [
+    "blue lock"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:010430063",
+   "name": "חוכמת הבבושקה",
+   "clicks": 1,
+   "queries": [
+    "רוסית"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:105800263",
+   "name": "פאזל מפרץ הרפתקאות 2X20 חל’",
+   "clicks": 1,
+   "queries": [
+    "פאזל 1000"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:011323309",
+   "name": "כל סיפורי רבי נחמן מברסלב",
+   "clicks": 1,
+   "queries": [
+    "gift card רבי מכר  חם מבית הדפוס להתאהב מהעמוד הראשון המלצת הצוות  המשחקים האהובים ביותר מומלצים כל המוצרים \t\t מומלצים"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  },
+  {
+   "id": "online:iw:IL:025520992",
+   "name": "FUNNY STORY",
+   "clicks": 1,
+   "queries": [
+    "caraval"
+   ],
+   "sitePage": 200,
+   "siteAvailability": "OutOfStock"
+  }
+ ],
+ "fixes": [
+  {
+   "query": "אליאס",
+   "visitors": 480,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 16,
+    "top": [
+     "מדריך לגבורות על 3 לבד קומיקס",
+     "מדריך לגבורות על 8 הלילה הארוך ביותר",
+     "מדריך לגבורות על 4 הזאב הרע מגיע",
+     "מדריך לגבורות על 11 נבלי-על",
+     "מדריך לגבורות על 1 המשימה קומיקס"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 31,
+    "top": [
+     "בלאנקו אליפות משחק קופסה",
+     "תגידו בלי להגיד",
+     "טאבו משחק קופסה",
+     "טיקט׳s",
+     "סליחה מה?!"
+    ]
+   }
+  },
+  {
+   "query": "אליאס משחק",
+   "visitors": 50,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 12,
+    "top": [
+     "המשחק האנושי",
+     "משחק החול",
+     "וורקרוס 2 משחק אחרון",
+     "סוף המשחק בובת סמרטוטים 3",
+     "אמארי 2 והמשחק הגדול"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 15,
+    "top": [
+     "בלאנקו אליפות משחק קופסה",
+     "טאבו משחק קופסה",
+     "תגידו בלי להגיד",
+     "טיקט׳s",
+     "מילים בעיגולים"
+    ]
+   }
+  },
+  {
+   "query": "alias",
+   "visitors": null,
+   "before": {
+    "phase": "deep-llm",
+    "why": null,
+    "total": 11,
+    "top": [
+     "מדריך לגבורות על 3 לבד קומיקס",
+     "מדריך לגבורות על 8 הלילה הארוך ביותר",
+     "מדריך לגבורות על 4 הזאב הרע מגיע",
+     "מדריך לגבורות על 1 המשימה קומיקס",
+     "מדריך לגבורות על 10 כולם משקרים"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 15,
+    "top": [
+     "תגידו בלי להגיד",
+     "טאבו משחק קופסה",
+     "טיקט׳s",
+     "סליחה מה?!",
+     "משחק מילים מהיר -Tapple"
+    ]
+   }
+  },
+  {
+   "query": "שם קוד",
+   "visitors": 109,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 136,
+    "top": [
+     "מונופול קלאסי (לבן)",
+     "טאקי בינלאומי משחק קלפים",
+     "השועל החמקמק משחק קופסא",
+     "קופה ראשית משחק קופסה",
+     "חתחתול משחק קלפים"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 136,
+    "top": [
+     "תיכון לילה 7 שם קוד גחלילית",
+     "שם קוד הלן",
+     "תיכון לילה 7: שם-קוד גחלילית",
+     "מילים בעיגולים",
+     "טאבו משחק קופסה"
+    ]
+   }
+  },
+  {
+   "query": "דיקסיט",
+   "visitors": 27,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "no-semantic-candidates",
+    "total": 1,
+    "top": [
+     "הזעקה הלא נשמעת למשמעות"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 11,
+    "top": [
+     "סליחה מה?!",
+     "חלומות קלפים",
+     "הזיקית",
+     "ספרו סיפור",
+     "חלומות 2 המשחק"
+    ]
+   }
+  },
+  {
+   "query": "dixit",
+   "visitors": null,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "no-semantic-candidates",
+    "total": 12,
+    "top": [
+     "הזעקה הלא נשמעת למשמעות",
+     "שישה מסיפורי המעשיות של רבי נחמן מברסלב",
+     "אנה פרנק יומן שואה",
+     "הדרמה של הילד המחונן",
+     "מנדלי והסיפור הלאומי"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 11,
+    "top": [
+     "סליחה מה?!",
+     "חלומות קלפים",
+     "הזיקית",
+     "ספרו סיפור",
+     "חלומות 2 המשחק"
+    ]
+   }
+  },
+  {
+   "query": "ספלנדור",
+   "visitors": 41,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 1,
+    "top": [
+     "LITTLE MISS SPLENDID MOVES HOUSE"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 11,
+    "top": [
+     "חתחתול משחק קלפים",
+     "חלומות קלפים",
+     "קופה ראשית משחק קופסה",
+     "פיצה בעיר - עד הלקוח האחרון משחק",
+     "מלך הפלאפל קלפים"
+    ]
+   }
+  },
+  {
+   "query": "splendor",
+   "visitors": null,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 8,
+    "top": [
+     "JAIPUR SPLENDOR",
+     "SANDS OF DUNE",
+     "PROVENCE GLORY",
+     "הוד הדממה",
+     "יפעת החיים"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 11,
+    "top": [
+     "חתחתול משחק קלפים",
+     "חלומות קלפים",
+     "קופה ראשית משחק קופסה",
+     "פיצה בעיר - עד הלקוח האחרון משחק",
+     "מלך הפלאפל קלפים"
+    ]
+   }
+  },
+  {
+   "query": "jujutsu kaisen",
+   "visitors": null,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "no-semantic-candidates",
+    "total": 12,
+    "top": [
+     "הזעקה הלא נשמעת למשמעות",
+     "שישה מסיפורי המעשיות של רבי נחמן מברסלב",
+     "אנה פרנק יומן שואה",
+     "הדרמה של הילד המחונן",
+     "מנדלי והסיפור הלאומי"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 16,
+    "top": [
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "ONE PIECE COLOR WALK 3",
+     "RECORD OF RAGNAROK VOL. 2",
+     "MY HERO ACADEMIA VOL. 03 PA"
+    ]
+   }
+  },
+  {
+   "query": "blue lock",
+   "visitors": 43,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 1,
+    "top": [
+     "THOUSAND BLUES"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 16,
+    "top": [
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "ONE PIECE COLOR WALK 3",
+     "RECORD OF RAGNAROK VOL. 2",
+     "MY HERO ACADEMIA VOL. 03 PA"
+    ]
+   }
+  },
+  {
+   "query": "attack on titan",
+   "visitors": 36,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 12,
+    "top": [
+     "פרסי ג’קסון 1 גנב הברק קומיקס",
+     "הקמע 2 קללת שומרת האבן קומיקס",
+     "הקמע 4 המועצה האחרונה קומיקס",
+     "הקמע 5 נסיך האלפים קומיקס",
+     "נייט הגדול קומיקס 2 על החיים ועל המוות"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 16,
+    "top": [
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "ONE PIECE COLOR WALK 3",
+     "RECORD OF RAGNAROK VOL. 2",
+     "MY HERO ACADEMIA VOL. 03 PA"
+    ]
+   }
+  },
+  {
+   "query": "berserk",
+   "visitors": 28,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 12,
+    "top": [
+     "פרסי ג’קסון 1 גנב הברק קומיקס",
+     "הקמע 2 קללת שומרת האבן קומיקס",
+     "הקמע 4 המועצה האחרונה קומיקס",
+     "הקמע 5 נסיך האלפים קומיקס",
+     "נייט הגדול קומיקס 2 על החיים ועל המוות"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 16,
+    "top": [
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "ONE PIECE COLOR WALK 3",
+     "RECORD OF RAGNAROK VOL. 2",
+     "MY HERO ACADEMIA VOL. 03 PA"
+    ]
+   }
+  },
+  {
+   "query": "death note",
+   "visitors": 35,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 2,
+    "top": [
+     "DEAD MOUNT DEATH PLAY VOL 2",
+     "DEAD MOUNT DEATH PLAY VOL 3"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 16,
+    "top": [
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "DRAGON BALL COLOR FREEZA 1 PA",
+     "ONE PIECE COLOR WALK 3",
+     "RECORD OF RAGNAROK VOL. 2",
+     "MY HERO ACADEMIA VOL. 03 PA"
+    ]
+   }
+  },
+  {
+   "query": "onyx storm",
+   "visitors": 53,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "no-semantic-candidates",
+    "total": 1,
+    "top": [
+     "DAWN OF ONYX (SACRED STONES BK1)"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 7,
+    "top": [
+     "להבת הברזל-האגף הרביעי 2",
+     "האגף הרביעי",
+     "FOURTH WING",
+     "IRON FLAME (FOURTH WING #2)",
+     "האגף הרביעי 1 מהדורה מהודרת"
+    ]
+   }
+  },
+  {
+   "query": "מר הפקרה",
+   "visitors": 78,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 12,
+    "top": [
+     "מוצב נחל עוז-ההפקרה והגבורה",
+     "המקרה המוזר של הכלב בשעת לילה",
+     "המקרה המוזר של ד”ר ג’קיל ומיסטר הייד מהדורה חדשה",
+     "מוסיקת המקרה מהד’ חדשה",
+     "המקווה האחרון בסיביר"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 8,
+    "top": [
+     "השקעות לעצלנים",
+     "הפסיכולוגיה של הכסף",
+     "אבא עשיר אבא עני מהדורה חדשה מעודכנת ומורחבת",
+     "כסף טוב",
+     "כסף טוב למתחילים"
+    ]
+   }
+  },
+  {
+   "query": "ספרים ברוסית",
+   "visitors": null,
+   "before": {
+    "phase": "deep-llm",
+    "why": null,
+    "total": 2,
+    "top": [
+     "עברית בהנאה לדוברי רוסית ללא עזרת מורה",
+     "עברית בהנאה לדוברי רוסית כולל 2 תקליטורים"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 8,
+    "top": [
+     "העיר השחורה",
+     "רשימותיו של מטורף",
+     "מאשינקה",
+     "עברית בהנאה לדוברי רוסית ללא עזרת מורה",
+     "רוסית בהנאה כולל תקליטור"
+    ]
+   }
+  },
+  {
+   "query": "הלילה של עומר",
+   "visitors": 34,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 2,
+    "top": [
+     "מיתרי לבי",
+     "לילה במנהרה"
+    ]
+   },
+   "after": {
+    "phase": "spelling",
+    "total": 2,
+    "top": [
+     "הלילה של עומאר",
+     "הלילה של עומאר"
+    ]
+   }
+  },
+  {
+   "query": "אבישג צ׳רלי",
+   "visitors": 33,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 4,
+    "top": [
+     "את עוד תתחרטי על זה",
+     "צ’רלי 4 האליטה של ריידוויל 4",
+     "תקלת מלתחה",
+     "מפורסמת בעל כורחה"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 51,
+    "top": [
+     "על הכול 10 לחתום על הכול",
+     "לוותר על הכול 1 על הכול 1",
+     "איתך עד הנצח 1",
+     "על הכול 5 למלוך על הכול",
+     "על הכול 8 להגן על הכול כרך א’"
+    ]
+   }
+  },
+  {
+   "query": "better than the movies",
+   "visitors": 60,
+   "before": {
+    "phase": "closest-alternatives",
+    "why": "llm-rejected-all",
+    "total": 1,
+    "top": [
+     "STAR BRIGHTER THAN THE SUN VOL 01"
+    ]
+   },
+   "after": {
+    "phase": "deep-llm",
+    "total": 2,
+    "top": [
+     "יותר טוב מהסרטים",
+     "יותר טוב מהסרטים"
+    ]
+   }
+  },
+  {
+   "query": "משחקים",
+   "visitors": 53,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 552,
+    "top": [
+     "משחקים אסורים 1 הקוורטרבק",
+     "טוויסטד 2 משחקים מעוותים",
+     "משחקים מאורגנים 1 משחקים שערוריתיים",
+     "משחקים מאורגנים 2 משחקים של שנאה חלק א",
+     "משחקים מאורגנים 3 משחקים של שנאה חלק ב"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 552,
+    "top": [
+     "משחק אימון לערנות ועשיה - POINTS OF YOU",
+     "משחק זיכרון פרחי בר- טבע ישראלי",
+     "משחק לא רציונלי",
+     "משחק טריוויה על חלל",
+     "טאקי בינלאומי משחק קלפים"
+    ]
+   }
+  },
+  {
+   "query": "ספרים באנגלית",
+   "visitors": 62,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 1287,
+    "top": [
+     "סגלית והמספרים באנגלית",
+     "קינדל אמזון מסך ”6 דור 11 16 ג’יגה-ביט 2024-ללא פרסומות",
+     "קינדל צבעוני אמזון ”7 16 ג’יגה-ביט",
+     "L3 WONDER",
+     "COURT OF MIST AND FURY #2 (COURT OF THORNS AND ROSES)"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 1287,
+    "top": [
+     "סגלית והמספרים באנגלית",
+     "L3 WONDER",
+     "HARRY POTTER BOX SET BOOKS 1–7 (DELUXE EDITION)",
+     "NEW MOON (TWILIGHT SAGA #2)",
+     "COURT OF WINGS AND RUIN #3 (COURT OF THORNS AND ROSES)"
+    ]
+   }
+  },
+  {
+   "query": "דנה לוי אלגרוד",
+   "visitors": 151,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 67,
+    "top": [
+     "הוויקינגים 2 סיגורד",
+     "המלאכים מג’רזי 1 גבריאל",
+     "המלאכים מג’רזי 2 רפאל",
+     "ולינדר",
+     "התשוקות 1 התשוקה לשרוד כרך א’"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 67,
+    "top": [
+     "המלאכים מג’רזי 3 מיכאל",
+     "הוויקינגים 2 סיגורד",
+     "המלאכים מג’רזי 1 גבריאל",
+     "המלאכים מג’רזי 2 רפאל",
+     "התשוקות 1 התשוקה לשרוד כרך א’"
+    ]
+   }
+  },
+  {
+   "query": "דנה לוי",
+   "visitors": 116,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 71,
+    "top": [
+     "הוויקינגים 2 סיגורד",
+     "המלאכים מג’רזי 1 גבריאל",
+     "המלאכים מג’רזי 2 רפאל",
+     "ולינדר",
+     "התשוקות 1 התשוקה לשרוד כרך א’"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 71,
+    "top": [
+     "המלאכים מג’רזי 3 מיכאל",
+     "הוויקינגים 2 סיגורד",
+     "המלאכים מג’רזי 1 גבריאל",
+     "המלאכים מג’רזי 2 רפאל",
+     "התשוקות 1 התשוקה לשרוד כרך א’"
+    ]
+   }
+  },
+  {
+   "query": "אל קנדי",
+   "visitors": 124,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 49,
+    "top": [
+     "שיר אהבה",
+     "מחוץ לקמפוס 1 העסקה מהדורה חדשה",
+     "מחוץ לקמפוס 3 התוצאה מהדורה מחודשת",
+     "מחוץ לקמפוס 3 התוצאה",
+     "מחוץ לקמפוס 2 הטעות מהדורה מחודשת"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 49,
+    "top": [
+     "שיר אהבה",
+     "מחוץ לקמפוס 1 העסקה מהדורה חדשה",
+     "מחוץ לקמפוס 3 התוצאה",
+     "מחוץ לקמפוס 2 הטעות מהדורה מחודשת",
+     "מחוץ לקמפוס 5 המורשת"
+    ]
+   }
+  },
+  {
+   "query": "לוח שנה",
+   "visitors": 119,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 47,
+    "top": [
+     "לוח שנה 24X30 נופי ישראל 2026-2027",
+     "לוח שנה 33X33 מינה 2026-2027",
+     "לוח שנה 19.5X22 טורנובסקי פרחי בר 2026-2027",
+     "לוח שנה מגנט 13/15.5 מאלה 2026-2027",
+     "לוח שנה שולחני 16X16 גל בן אהרון 2026-2027"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 47,
+    "top": [
+     "לוח שנה 24X30 נופי ישראל 2026-2027",
+     "לוח שנה 19.5X22 טורנובסקי פרחי בר 2026-2027",
+     "לוח שנה 33X33 נב 2026-2027",
+     "לוח שנה פד לשולחן 21X29.7 גל בן אהרון 2026-2027",
+     "לוח שנה שולחני 16X16 מאלה 2026-2027"
+    ]
+   }
+  },
+  {
+   "query": "מיכאל",
+   "visitors": 128,
+   "before": {
+    "phase": "lexical",
+    "why": null,
+    "total": 119,
+    "top": [
+     "מיכאל שלי מהד’ חדשה",
+     "מיכאל סטרוגוב מהד’ חדשה",
+     "המלאכים מג’רזי 3 מיכאל",
+     "מיכאל שלי מהד’ חדשה",
+     "המלאכים מג’רזי 3 מיכאל"
+    ]
+   },
+   "after": {
+    "phase": "lexical",
+    "total": 119,
+    "top": [
+     "המלאכים מג’רזי 3 מיכאל",
+     "מיכאל שלי מהד’ חדשה",
+     "מיכאל סטרוגוב מהד’ חדשה",
+     "מיכאל שלי מהד’ חדשה",
+     "המלאכים מג’רזי 3 מיכאל"
+    ]
+   }
+  }
+ ]
+}
