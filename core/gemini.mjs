@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 let ai;
-export const searchModel=()=>process.env.STUDIO_SEARCH_MODEL||'gemini-3.1-flash-lite';
+export const searchModel=()=>process.env.STUDIO_SEARCH_MODEL||'gemini-3.5-flash-lite';
 // Thinking level of the search-time LLM stages (gemini-3 models): higher is slower. STUDIO_SEARCH_THINKING overrides it.
 export const searchThinking=()=>['minimal','low','medium','high'].includes(process.env.STUDIO_SEARCH_THINKING)?process.env.STUDIO_SEARCH_THINKING:'medium';
 export async function generate({stage,prompt,schema,signal}){

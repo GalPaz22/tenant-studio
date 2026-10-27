@@ -13,7 +13,7 @@ test('missing evidence and provider failures return explicitly unverified altern
 test('specifications support requirement evidence and partial evidence is rejected',async()=>{
  const search=createSearchService(products,client,async({stage})=>({data:stage==='interpret'?plan:{matches:[{id:'1',evidence:[{requirement:0,field:'title',quote:'צלחת'},{requirement:1,field:'specifications',quote:'צורה: עגולה'},{requirement:2,field:'specifications',quote:'חומר: קרמיקה'},{requirement:3,field:'specifications',quote:'שוליים: דקים'}]},{id:'2',evidence:[{requirement:0,field:'title',quote:'מגבת'}]}]}}));const r=await search({query:'צלחת עגולה מקרימקה עם שוליים דקים'});assert.deepEqual(r.matches.map(p=>p.id),['1']);
 });
-test('search model and repair model have independent defaults',()=>{assert.equal(searchModel(),'gemini-3.1-flash-lite');assert.equal(chatModel(),'gemini-3.1-flash-lite');});
+test('search model and repair model have independent defaults',()=>{assert.equal(searchModel(),'gemini-3.5-flash-lite');assert.equal(chatModel(),'gemini-3.5-flash-lite');});
 test('unknown retrieval hints do not discard the request or bypass evidence checks',async()=>{
  const stages=[];const search=createSearchService(products,client,async({stage})=>{stages.push(stage);return {data:stage==='interpret'?{...plan,categories:['invented'],tags:['unclassified material']}:{matches:[]}}});const r=await search({query:'צלחת עגולה מקרימקה עם שוליים דקים'});assert.deepEqual(stages,['interpret','select','select']);assert.equal(r.metadata.closestFallback,true);assert.deepEqual(r.metadata.requirements,plan.requirements);
 });
