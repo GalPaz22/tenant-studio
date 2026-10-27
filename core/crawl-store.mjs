@@ -9,20 +9,21 @@ export const LEASE_MS=3*60*1000;
 
 // Works with any collection pair that speaks the MongoDB driver API (real client or the in-memory test double).
 export function crawlStoreOver({crawls,products},{now=()=>new Date()}={}){
- const saved=new Map();// projectId → Set of skus already written, so each save only sends new pages
- const known=id=>{if(!saved.has(id))saved.set(id,new Set());return saved.get(id);};
+ const saved=new Map();// projectId → Map of sku to persisted content; changed pages are updated on repeat crawls.
+ const known=id=>{if(!saved.has(id))saved.set(id,new Map());return saved.get(id);};
+ const fingerprint=p=>JSON.stringify({...p,description:String(p.description||'').slice(0,1500)});
  return {
   async meta(id){const doc=await crawls.findOne({_id:id},{projection:{queue:0}});if(!doc)return null;return {...doc,productCount:await products.countDocuments({projectId:id})};},
   // Full state for the worker and for merging.
   async read(id){
    const doc=await crawls.findOne({_id:id});if(!doc)return null;const map={},keys=known(id);
-   for(const p of await products.find({projectId:id},{projection:{_id:0,projectId:0}}).toArray()){map[p.sku]=p;keys.add(p.sku);}
+   for(const p of await products.find({projectId:id},{projection:{_id:0,projectId:0}}).toArray()){map[p.sku]=p;keys.set(p.sku,fingerprint(p));}
    return {...doc,projectId:id,queue:doc.queue||[],next:doc.next||0,errors:Object.fromEntries((doc.errors||[]).map(e=>[e.url,e.error])),products:map};
   },
   async save(state,{queue=false}={}){
-   const id=state.projectId,keys=known(id),fresh=Object.values(state.products||{}).filter(p=>!keys.has(p.sku));
+   const id=state.projectId,keys=known(id),fresh=Object.values(state.products||{}).filter(p=>fingerprint(p)!==keys.get(p.sku));
    if(fresh.length)await products.bulkWrite(fresh.map(p=>({replaceOne:{filter:{_id:`${id}:${p.sku}`},replacement:{...p,description:String(p.description||'').slice(0,1500),projectId:id,_id:`${id}:${p.sku}`},upsert:true}})),{ordered:false});
-   fresh.forEach(p=>keys.add(p.sku));
+   fresh.forEach(p=>keys.set(p.sku,fingerprint(p)));
    const set={updatedAt:now().toISOString(),total:(state.queue||[]).length,errors:Object.entries(state.errors||{}).slice(-2000).map(([url,error])=>({url,error}))};for(const k of PROGRESS)if(state[k]!==undefined)set[k]=state[k];if(queue)set.queue=state.queue;
    await crawls.updateOne({_id:id},{$set:set,...(state.blockedReason===undefined&&{$unset:{blockedReason:''}})},{upsert:true});
    state.updatedAt=set.updatedAt;return state;
