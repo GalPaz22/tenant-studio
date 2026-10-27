@@ -78,3 +78,22 @@ test('the studio runs a tenant’s crawl itself, only that tenant, once at a tim
  assert.equal(crawlTarget({...project,scraper:{status:'draft',spec,validation:{fill:{name:0.5,key:1}}}}).spec,null,'an unvalidated draft is not');
  assert.equal(scraperReady({status:'active',spec}),true);
 });
+
+
+test('completed crawl restarts with a fresh queue and refreshes an existing product',async()=>{
+ const {store,products,crawls}=fakeStore(()=>new Date('2026-10-27T12:00:00Z'));
+ await startCrawl(project,store);
+ const seed=async p=>({projectId:p.id,origin:p.url,status:'ready',robots:{rules:[]},sources:{sitemap:1},queue:[p.url+'/products/example'],next:0,products:{},errors:{},failures:0,startedAt:'s'});
+ let price=100;
+ const run=async(state,{store:s})=>{for(;state.next<state.queue.length;state.next++){state.products.example={sku:'example',name:'Product',price};await s.save(state);}state.status='done';await s.save(state);};
+ await workOnce(store,{owner:'one#1',seed,run,log:()=>{}});
+ assert.equal(products.docs.get(project.id+':example').price,100);
+ assert.equal(crawls.docs.get(project.id).desired,'done');
+ price=120;
+ await startCrawl(project,store);
+ assert.equal(crawls.docs.get(project.id).reseedRequested,true,'a completed crawl must trigger reseeding');
+ await workOnce(store,{owner:'two#2',seed,run,log:()=>{}});
+ assert.equal(products.docs.get(project.id+':example').price,120,'a repeated crawl must update saved products');
+ assert.equal(crawls.docs.get(project.id).next,1);
+ assert.equal(crawls.docs.get(project.id).status,'done');
+});
