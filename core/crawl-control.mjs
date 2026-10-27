@@ -31,7 +31,7 @@ export const scraperReady=s=>!!s?.spec&&(s.status==='active'||s.status==='draft'
 export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null,spec:scraperReady(p.scraper)?p.scraper.spec:null};};
 export async function startCrawl(p,store,{reseed=false}={}){
  const meta=await store.meta(p.id);
- await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:reseed||!meta?.total});
+ await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:reseed||!meta?.total||meta.status==='done'||(meta.total>0&&meta.next>=meta.total)});
 }
 export async function stopCrawl(p,store){const meta=await store.meta(p.id);if(meta?.desired!=='running')throw Error('הסורק לא רץ');await store.control(p.id,{desired:'stopped'});}
 
