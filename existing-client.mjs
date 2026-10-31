@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {createDraftRuntime} from './runtime.mjs';
 import {buildSearchIndex} from './core/search-index.mjs';
 import {hash} from './core/catalog.mjs';
+import {retiredRows,processProduct,feedCategories} from './core/core.mjs';
 const list=v=>(Array.isArray(v)?v:typeof v==='string'?v.split(','):[]).map(x=>typeof x==='string'?x:x?.name||x?.label).filter(Boolean);
 export const sourceFieldNames=['author','publisher','isbn','language','originalTitle','originalLanguage','translator','publicationYear','series','brand'];
 export function sourceSpecifications(d){const specs={...(d.specifications||{})};for(const key of sourceFieldNames){const v=d[key];if(typeof v==='string'||typeof v==='number')specs[key]=String(v);else if(Array.isArray(v)&&v.every(x=>typeof x==='string'))specs[key]=v.join(' · ');}return specs;}
@@ -46,8 +47,31 @@ export async function importDbField(p,{field,target},open=withProducts){
  p.processingHistory??=[];p.processingHistory.push({target,source:'db:'+field,ids,at:new Date().toISOString(),kind:'database-source'});p.processingHistory=p.processingHistory.slice(-10);
  return {imported:ids.length,field:target,from:field,notice:'ערכי מקור מהמסד; ניתנים לחיפוש לאחר הבנייה מחדש'};});
 }
+// A merchant Mongo row in the studio's raw catalog shape; retired (core retiredRows) hides what production hides.
+const rawRow=(d,retired)=>({id:String(d.id??d._id),name:String(d.name||d.title||''),description:String(d.enrichedDescription||d.description1||d.description||''),categories:(c=>c.length?c:feedCategories(d))(list(d.categories)),tags:[...new Set([...list(d.tags),...list(d.softCategories),...list(d.category)])],specifications:sourceSpecifications(d),sku:d.sku||'',url:d.url||d.permalink,image:typeof d.image==='string'?d.image:d.image?.src||d.images?.[0]?.src,price:d.price!=null&&d.price!==''&&Number.isFinite(Number(d.price))?Number(d.price):null,regularPrice:d.regular_price!==''&&d.regular_price!=null?Number(d.regular_price):null,stockStatus:d.stockStatus||d.stock_status||(d.available===true?'instock':'unknown'),status:d.status||'ACTIVE',hidden:d.hidden===true||d.notInStore===true||d.catalog_visibility==='hidden'||retired(d)});
+// Live fields production's tenant module (mergeLive) lays over its snapshot from the store's Mongo; only set values win.
+const LIVE_FIELDS=['price','regularPrice','stockStatus','hidden','status','url','image'];
+// The studio's catalog as production serves it: live price/stock/visibility from the store's rows, products added since
+// the import are processed like production's new rows, and products gone from the store are hidden (production drops
+// them). Enriched card fields (tags, types, text) are kept. The search index is rebuilt; Atlas retrieval waits for a build.
+export function applyLiveRows(p,docs,now=new Date()){
+ const retired=retiredRows(docs),live=new Map();for(const d of docs){const r=rawRow(d,retired);live.set(r.id,r);}
+ const find=id=>live.get(String(id))||live.get(String(id).split(':').pop()),seen=new Set(),counts={rows:docs.length,changed:0,stockChanged:0,priceChanged:0,added:0,gone:0};
+ const lay=(x,row)=>{let changed=false;for(const k of LIVE_FIELDS)if(row[k]!==undefined&&row[k]!==null&&x[k]!==row[k]){x[k]=row[k];changed=true;}if(!x.categories?.length&&row.categories?.length){x.categories=row.categories;changed=true;}return changed;};
+ const cards=new Map((p.productCards||[]).map(c=>[String(c.id),c]));
+ for(const raw of p.catalog.products){const row=find(raw.id),card=cards.get(String(raw.id));
+  if(!row){if(!raw.hidden){raw.hidden=true;counts.gone++;}if(card)card.hidden=true;continue;}seen.add(row.id);
+  const stock=raw.stockStatus,price=raw.price;if(lay(raw,row))counts.changed++;if(raw.stockStatus!==stock)counts.stockChanged++;if(raw.price!==price)counts.priceChanged++;if(card)lay(card,row);}
+ const revision=p.revisions.at(-1),client={...revision?.profile,tenantId:p.id,version:'semantix-mini',publishedStatuses:['ACTIVE','publish']};
+ for(const [id,row] of live){if(seen.has(id))continue;p.catalog.products.push(row);counts.added++;if(p.productCards)p.productCards.push(processProduct(row,client));}
+ p.catalog.coverage={...p.catalog.coverage,count:p.catalog.products.length};
+ if(p.productCards){p.searchIndex=buildSearchIndex(p.productCards,'live-fields-'+now.getTime());delete p.vectorIndex;p.mongoPolicyDirty=true;}
+ p.existingClient.liveFields={at:now.toISOString(),...counts};return {at:now.toISOString(),...counts};
+}
+export const LIVE_PROJECTION={...Object.fromEntries(sourceFieldNames.map(k=>[k,1])),id:1,name:1,title:1,description:1,description1:1,enrichedDescription:1,categories:1,productTypes:1,customAttributes:1,specialLabel:1,tags:1,softCategories:1,category:1,specifications:1,sku:1,url:1,permalink:1,image:1,images:1,price:1,regular_price:1,stockStatus:1,stock_status:1,available:1,status:1,hidden:1,notInStore:1,catalog_visibility:1,lastSeenAt:1,pageCheck:1};
+export const refreshLiveFields=p=>withProducts(p,async col=>applyLiveRows(p,await col.find({},{projection:LIVE_PROJECTION,maxTimeMS:60000}).limit(60001).toArray()));
 export function existingProject(username,user,docs){
- const products=docs.map(d=>({id:String(d.id??d._id),name:d.name||d.title||'',description:d.enrichedDescription||d.description1||d.description||'',categories:list(d.categories),tags:[...new Set([...list(d.tags),...list(d.softCategories),...list(d.category)])],specifications:sourceSpecifications(d),sku:d.sku||'',url:d.url||d.permalink,image:typeof d.image==='string'?d.image:d.image?.src||d.images?.[0]?.src,price:d.price!=null&&d.price!==''&&Number.isFinite(Number(d.price))?Number(d.price):null,regularPrice:d.regular_price!==''&&d.regular_price!=null?Number(d.regular_price):null,stockStatus:d.stockStatus||d.stock_status||(d.available===true?'instock':'unknown'),status:d.status||'ACTIVE',hidden:d.hidden===true||d.notInStore===true||d.catalog_visibility==='hidden'}));
+ const retired=retiredRows(docs),products=docs.map(d=>rawRow(d,retired));
  let url='https://existing-client.invalid/';for(const p of products){try{const u=new URL(p.url);if(['http:','https:'].includes(u.protocol)){url=u.origin;break}}catch{}}
  const tags=[...new Set(products.flatMap(p=>p.tags))],categories=[...new Set(products.flatMap(p=>p.categories))];
  const profile={name:username,domain:'retail',productTypes:{},colors:{},finishes:{},queryAliases:{},tagDefinitions:{},badgeCandidates:{categories:[],tags:[]},badgeRules:[],pipeline:{maxCandidates:100,lightweightRouter:true}};
@@ -75,7 +99,7 @@ export async function loadExistingClient(username,{userId=null}={}){
  try{await client.connect();const user=await resolveExistingUser(client.db('users').collection('users'),username,{userId});
  if(!user?.dbName)throw Error('לא נמצא לקוח עם שם המשתמש הזה');
  const collection=client.db(user.dbName).collection(user.collections?.products||'products');
- const docs=await collection.find({},{projection:{...Object.fromEntries(sourceFieldNames.map(k=>[k,1])),id:1,name:1,title:1,description:1,description1:1,enrichedDescription:1,categories:1,tags:1,softCategories:1,category:1,specifications:1,sku:1,url:1,permalink:1,image:1,images:1,price:1,regular_price:1,stockStatus:1,stock_status:1,available:1,status:1,hidden:1,notInStore:1,catalog_visibility:1},maxTimeMS:30000}).limit(50001).toArray();
+ const docs=await collection.find({},{projection:LIVE_PROJECTION,maxTimeMS:30000}).limit(50001).toArray();
  if(docs.length>50000)throw Error('הקטלוג גדול מ־50,000 מוצרים; נדרש חיבור מדורג לפני פתיחה');
  // A picked user is stored under its own username, so the next open finds this exact client again.
  return existingProject(userId?(user.username||user.name||username).trim():username.trim(),user,docs);

@@ -1,8 +1,11 @@
 import { GoogleGenAI } from '@google/genai';
 import {createHash} from 'node:crypto';
 import {validateHooks} from './core/tenant-hooks.mjs';
+import {messagePrefix} from './core/json-message-stream.mjs';
+import {DEEP_MODELS,THINKING_LEVELS} from './core/gemini.mjs';
 export const chatModel=()=>process.env.STUDIO_CHAT_MODEL||'gemini-3.5-flash-lite';
 export const askChatAgent=prompt=>askAgent(prompt,{model:chatModel(),reasoning:false});
+export const askConciergeAgent=(prompt,{model,purpose}={})=>askAgent(prompt,{model:model||chatModel(),reasoning:false,maxOutputTokens:purpose==='trigger'||purpose==='classify'?300:1800});
 // The studio agent: gemini-3.8-flash by default (fast multi-step tool use); the reviewer and planner stay on Pro.
 // Override with STUDIO_AGENT_MODEL (e.g. gemini-3.1-pro-preview for deeper, slower turns).
 export const studioModel=()=>process.env.STUDIO_AGENT_MODEL||'gemini-3.8-flash';
@@ -11,10 +14,14 @@ export const processingModel=()=>process.env.STUDIO_PROCESSING_MODEL||'gemini-3.
 // Research over a lot of evidence can take minutes; one retry when the provider's deadline expires.
 export const askPlanner=async prompt=>{try{return await askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}catch(e){if(!/DEADLINE_EXCEEDED|timed? ?out|504|503|UNAVAILABLE/i.test(e.message))throw e;return askAgent(prompt,{model:plannerModel(),reasoning:true,timeoutMs:300000});}};
 export const askProcessing=prompt=>askAgent(prompt,{model:processingModel(),reasoning:false});
-export const askStudioAgent=prompt=>askAgent(prompt,{model:studioModel(),reasoning:false,timeoutMs:180000});
+// The search-performance report (queries, clicks and carts over a period → proposals): gemini-3.8-flash by default, with
+// thinking on. Override with STUDIO_REPORT_MODEL (e.g. gemini-3.1-pro-preview for the slower, deeper review).
+export const reportModel=()=>process.env.STUDIO_REPORT_MODEL||'gemini-3.8-flash';
+export const askReport=async prompt=>{try{return await askAgent(prompt,{model:reportModel(),reasoning:true,timeoutMs:300000});}catch(e){if(!/DEADLINE_EXCEEDED|timed? ?out|504|503|UNAVAILABLE/i.test(e.message))throw e;return askAgent(prompt,{model:reportModel(),reasoning:true,timeoutMs:300000});}};
+export const askStudioAgent=(prompt,options={})=>askAgent(prompt,{...options,model:studioModel(),reasoning:false,timeoutMs:180000});
 // The reviewer that accepts or rejects a search fix thinks before answering; a cheap judge approves false claims.
 export const judgeModel=()=>process.env.STUDIO_JUDGE_MODEL||plannerModel();
-export const askJudgeAgent=prompt=>askAgent(prompt,{model:judgeModel(),reasoning:true});
+export const askJudgeAgent=(prompt,options={})=>askAgent(prompt,{...options,model:judgeModel(),reasoning:true});
 const minimalRejected=new Set();
 // A prompt may start with a part that is identical for every tenant and every round (instructions, engine notes, tool
 // list), followed by CACHE_BREAK. That part is kept in an explicit Gemini context cache (billed at the cached rate) and
@@ -30,18 +37,33 @@ async function cachedPrefix(ai,model,prefix){
  const pending=ai.caches.create({model,config:{contents:[{role:'user',parts:[{text:prefix}]}],toolConfig:NO_TOOLS,ttl:CACHE_TTL_S+'s',displayName:'studio-agent-static'}}).catch(e=>{cacheFailed.add(key);caches.delete(key);console.error('[studio] prompt cache unavailable:',e.message.slice(0,160));return null;});
  const entry={pending,expires:Date.now()+CACHE_TTL_S*1000};caches.set(key,entry);entry.name=(await pending)?.name||null;return entry.name;
 }
-export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false,timeoutMs=reasoning?120000:45000}={}) {
+export async function askAgent(prompt,{model=process.env.STUDIO_MODEL||'gemini-2.5-flash',reasoning=false,timeoutMs=reasoning?120000:45000,maxOutputTokens=reasoning?24000:12000,onText=null,signal}={}) {
  const key=process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
  if(!key)throw Error('נדרש GEMINI_API_KEY או GOOGLE_API_KEY להפעלת האייג׳נט');
  const ai=new GoogleGenAI({apiKey:key}),split=prompt.indexOf(CACHE_BREAK);
  let contents=prompt.replace(CACHE_BREAK,'\n'),cachedContent=null;
  if(split>0){cachedContent=await cachedPrefix(ai,model,prompt.slice(0,split));if(cachedContent)contents=prompt.slice(split+CACHE_BREAK.length);}
  // Fast calls use the lowest thinking level a model accepts; newer models reject "minimal", so fall back to "low".
- const ask=level=>ai.models.generateContent({
+ const ask=async level=>{
+  const request={
   model,contents,
-  config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens:reasoning?24000:12000,...(cachedContent?{cachedContent}:{toolConfig:NO_TOOLS}),
-   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:level}:{thinkingBudget:reasoning?8192:0},httpOptions:{timeout:timeoutMs,retryOptions:{attempts:1}}}
- });
+  config:{temperature:reasoning?1:0,responseMimeType:'application/json',maxOutputTokens,...(cachedContent?{cachedContent}:{toolConfig:NO_TOOLS}),
+   thinkingConfig:/^gemini-3/.test(model)?{thinkingLevel:level}:{thinkingBudget:reasoning?8192:0},...(signal?{abortSignal:signal}:{}),httpOptions:{timeout:timeoutMs,retryOptions:{attempts:1}}}
+  };
+  if(!onText)return ai.models.generateContent(request);
+  await onText(null);
+  let raw='',sent='',usageMetadata,candidates;
+  const stream=await ai.models.generateContentStream(request);
+  for await(const chunk of stream){
+   if(signal?.aborted)throw Object.assign(Error('הריצה נעצרה'),{stopped:true});
+   raw+=chunk.text||'';if(raw.length>128000)throw Error('פלט המודל חרג מהמגבלה');
+   if(chunk.usageMetadata)usageMetadata=chunk.usageMetadata;
+   if(chunk.candidates?.[0]?.finishReason)candidates=chunk.candidates;
+   const value=messagePrefix(raw);
+   if(value.length>sent.length){await onText(value.slice(sent.length));sent=value;}
+  }
+  return {text:raw,usageMetadata,candidates};
+ };
  let level=reasoning?'high':minimalRejected.has(model)||!/flash/.test(model)?'low':'minimal',response;
  // Each known rejection changes one thing and retries: a rejected cache → the whole prompt without it; a thinking level
  // the model does not support → "low" (remembered per model). Anything else, or the same rejection twice, is thrown.
@@ -99,7 +121,8 @@ export function validateProfile(profile) {
   for(const key of Object.keys(value))if(['__proto__','prototype','constructor'].includes(key))throw Error('Unsafe key');
  }
  const strings=v=>Array.isArray(v)&&v.length<=100&&v.every(x=>typeof x==='string'&&x.length<=200);
- for(const rule of Object.values(profile.productTypes))if(!strings(rule.categories)||!strings(rule.queryAliases))throw Error('Invalid product type');
+ for(const rule of Object.values(profile.productTypes))if(!strings(rule.categories)||!strings(rule.queryAliases)||rule.titleAliases!==undefined&&!strings(rule.titleAliases))throw Error('Invalid product type');
+ if(profile.typeFrom!==undefined&&!['title','categories'].includes(profile.typeFrom))throw Error('Invalid typeFrom');
  for(const cats of Object.values(profile.colors))if(!strings(cats))throw Error('Invalid colors');
  for(const rule of Object.values(profile.finishes))if(!strings(rule.categories)||!strings(rule.queryAliases))throw Error('Invalid finish');
  for(const alias of Object.values(profile.queryAliases))if(typeof alias!=='string'||alias.length>200)throw Error('Invalid alias');
@@ -124,6 +147,11 @@ export function validateProfile(profile) {
  if(!p||!Number.isInteger(p.maxCandidates)||p.maxCandidates<10||p.maxCandidates>100||typeof p.lightweightRouter!=='boolean')throw Error('Invalid pipeline');
  validateHooks(profile.hooks,profile.hookData);
  if(p.outOfStock!==undefined&&!['hide','last','show'].includes(p.outOfStock))throw Error('Invalid pipeline');
+ if(p.selectCandidates!==undefined&&(!Number.isInteger(p.selectCandidates)||p.selectCandidates<10||p.selectCandidates>100))throw Error('Invalid pipeline');
+ if(p.deepModel!==undefined&&!DEEP_MODELS.includes(p.deepModel))throw Error('Invalid pipeline');
+ if(p.deepThinking!==undefined&&!THINKING_LEVELS.includes(p.deepThinking)||p.selectThinking!==undefined&&!THINKING_LEVELS.includes(p.selectThinking))throw Error('Invalid pipeline');
+ if(p.lexicalFirst!==undefined&&typeof p.lexicalFirst!=='boolean'||p.partialWords!==undefined&&typeof p.partialWords!=='boolean')throw Error('Invalid pipeline');
+ if(p.llmConcurrency!==undefined&&(!Number.isInteger(p.llmConcurrency)||p.llmConcurrency<1||p.llmConcurrency>8)||p.queueMs!==undefined&&(!Number.isInteger(p.queueMs)||p.queueMs<0||p.queueMs>30000))throw Error('Invalid pipeline');
  if(p.pageSize!==undefined&&(!Number.isInteger(p.pageSize)||p.pageSize<1||p.pageSize>50))throw Error('Invalid pipeline');
  if(p.expansion!==undefined&&!['always','sparse','off'].includes(p.expansion)||p.expandBelow!==undefined&&(!Number.isInteger(p.expandBelow)||p.expandBelow<1||p.expandBelow>200))throw Error('Invalid pipeline');
  if(profile.indexFields!==undefined && (!strings(profile.indexFields)||profile.indexFields.some(f=>!['name','id','categories','tags','colors','finishes','productType','price','stockStatus','hidden'].includes(f))))throw Error('Invalid index fields');

@@ -24,6 +24,26 @@ export function storesFromIndex(text,into=new Map()){
 export const platformHint=s=>Object.entries(s.hints||{}).sort((a,b)=>b[1]-a[1])[0]?.[0]||null;
 export const indexPageUrl=(api,domain,page)=>`${api}?url=${encodeURIComponent(domain)}&matchType=domain&page=${page}&fl=url&output=json&filter=${encodeURIComponent('~url:.*/(products|product|items|product-page)/.*')}`;
 
+// ---------- discovery (Tranco top sites: traffic rank, no account needed) ----------
+// "rank,domain" lines → Israeli domains with their global rank, most visited first.
+// Academic, government, municipal, army, school and ISP domains are never shops.
+const NOT_SHOPS=/\.(ac|gov|muni|idf|k12|net)\.il$/i;
+export function parseTranco(csv,{suffix=/\.il$/i}={}){
+ const out=[];for(const line of String(csv).split(/\r?\n/)){const [rank,domain]=line.split(',');if(domain&&suffix.test(domain.trim())&&!NOT_SHOPS.test(domain.trim())&&Number(rank)>0)out.push({host:bareHost(domain.trim()),rank:Number(rank)});}
+ return out.sort((a,b)=>a.rank-b.rank);
+}
+const PRICE=/(₪|ש"ח|ש״ח|ILS)\s?\d|\d[\d,.]*\s?(₪|ש"ח|ש״ח)/g;
+const CART=/הוסף?ה? ל(סל|עגלה)|הוספה לסל|לסל הקניות|עגלת (ה)?קניות|סל (ה)?קניות|add to (cart|bag)|href="[^"]*\/(cart|checkout)\b|mini-?cart/i;
+const COMMERCE=['shopify','woocommerce','magento','bigcommerce','prestashop'];
+// Is this home page an online store? A commerce platform, or shekel prices next to a shopping cart.
+export function storeSignals(html){
+ const signals=platformSignals(html),platform=COMMERCE.find(p=>signals.includes(p))||(/konimbo/i.test(html)?'konimbo':null);
+ const prices=(load(html)('body').text().match(PRICE)||[]).length,cart=CART.test(html);
+ return {store:isShop({platform,prices,cart}),platform:platform||(signals.includes('wix')?'wix':'custom'),prices,cart};
+}
+// Shopify and Konimbo are shops by definition; WooCommerce/Magento also run on sites that sell nothing, so they need a price or a cart.
+export const isShop=({platform,prices=0,cart=false})=>['shopify','konimbo'].includes(platform)||COMMERCE.includes(platform)&&(prices>0||cart)||prices>=3&&cart;
+
 // ---------- fetching ----------
 // Browser-like GET that follows a few same-site redirects and reports where it landed.
 export function pageFetcher(fetcher=fetchOrigin,{timeoutMs=25000}={}){
@@ -76,8 +96,13 @@ export function searchPlan(platform,form,origin,providers=[]){
 
 const NO_RESULTS=/לא נמצאו|לא נמצא (מוצר|פריט)|אין תוצאות|לא מצאנו|\b0 תוצאות|תוצאות\s*:\s*0(?!\d)|נמצאו 0(?!\d)|results\s*:\s*0(?!\d)|אין מוצרים התואמים|no (products|results)( were)? found|did not match any|nothing (was )?found|0 results/i;
 const CARD='li.product,.products .product,.product-item,.product-card,.productCard,.product-grid-item,.grid-product,.card-wrapper,[class*="product-card"],[class*="product-item"],[class*="ProductItem"],[class*="productItem"],[data-product-id]';
+// Colour/size swatches link to the product too; their labels ("Black") are not result titles.
+const SWATCH='[class*="swatch"],[class*="color-option"],[class*="variant-option"],[class*="product-options"],[class*="configurable"]';
 const OUTSIDE='header,nav,footer,aside,[class*="related"],[class*="recommend"],[class*="upsell"],[class*="cross-sell"],[class*="recently"],[class*="mini-cart"],[class*="minicart"]';
-const TITLE='.woocommerce-loop-product__title,.product-item-link,.product-title,.product-name,.card__heading,[class*="title"],[class*="name"],h2,h3,h4';
+// Title candidates, most specific first; generic *name*/*title* classes also match colour, size, price and badge labels.
+const TITLES=['.woocommerce-loop-product__title','.product-item-link','.product-title','.product-name','.product-item-name','.card__heading','h2','h3','h4','[class*="title"]','[class*="name"]'];
+const NOT_TITLE=/colou?r|swatch|size|option|price|badge|label|brand|vendor|rating|stock/i;
+const titleIn=($,card)=>{for(const sel of TITLES)for(const el of card.find(sel).toArray()){const t=clean($(el).text());if(t&&!NOT_TITLE.test($(el).attr('class')||''))return t;}return '';};
 const clean=s=>String(s||'').replace(/\s+/g,' ').trim().slice(0,140);
 const echoes=(text,query)=>{const t=norm(text),q=norm(query);return !q||t.includes(q)||t.includes(norm(encodeURIComponent(query)));};
 // Result count and titles on a search results page. `measurable:false` when the page is not a results page for this query
@@ -86,7 +111,7 @@ const echoes=(text,query)=>{const t=norm(text),q=norm(query);return !q||t.includ
 export function parseResults(html,query,pageUrl){
  const $=load(html),page=new URL(pageUrl);
  if(PRODUCT_PATH.test(page.pathname)&&productEvidence(html))return {measurable:true,count:1,titles:[clean($('h1').first().text())],redirect:true};
- $(OUTSIDE+',script,style,noscript,template,svg').remove();
+ $(OUTSIDE+',script,style,noscript,template,svg').remove();$(SWATCH).remove();
  if(!echoes($('title').text()+' '+$('input').map((_,e)=>$(e).attr('value')||'').get().join(' ')+' '+$('body').text(),query))return {measurable:false,count:0,titles:[]};
  const empty=NO_RESULTS.test($('body').text());
  const keyOf=a=>{let u;try{u=new URL(($(a).attr('href')||'').trim(),pageUrl);}catch{return null;}return PRODUCT_PATH.test(u.pathname)&&bareHost(u.hostname)===bareHost(page.hostname)?u.pathname.replace(/\/+$/,''):null;};
@@ -95,12 +120,12 @@ export function parseResults(html,query,pageUrl){
   let card=$(links[0]);
   for(let p=card.parent();p.length&&!['body','html'].includes(p[0].name);p=p.parent()){if(new Set(p.find('a[href]').toArray().map(keyOf).filter(Boolean)).size>1)break;card=p;}
   const slug=()=>{try{return decodeURIComponent(key.split('/').pop()).replace(/^\d+-+/,'').replace(/[-_]+/g,' ');}catch{return '';}};
-  return clean(card.find(TITLE).first().text()||links.map(a=>$(a).attr('title')||$(a).text()).find(t=>clean(t))||card.find('img[alt]').attr('alt')||slug())||'(ללא שם)';
+  return clean(titleIn($,card)||links.map(a=>$(a).attr('title')||$(a).text()).find(t=>clean(t))||card.find('img[alt]').attr('alt')||slug())||'(ללא שם)';
  });
  if(!titles.length){
   let cards=$(CARD).toArray().filter(el=>$(el).find('a[href]').length);
   cards=cards.filter(el=>!cards.some(o=>o!==el&&$(o).find(el).length));
-  titles=cards.map(el=>{const c=$(el);return clean(c.find(TITLE).first().text()||c.find('a[title]').attr('title')||c.find('img[alt]').attr('alt')||c.find('a').first().text());}).filter(Boolean);
+  titles=cards.map(el=>{const c=$(el);return clean(titleIn($,c)||c.find('a[title]').attr('title')||c.find('img[alt]').attr('alt')||c.find('a').first().text());}).filter(Boolean);
  }
  // An empty page without a "no results" message is what client-rendered results look like: unknown, not zero.
  if(!titles.length&&!empty)return {measurable:false,count:0,titles:[],silent:true};

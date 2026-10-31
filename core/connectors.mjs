@@ -1,22 +1,32 @@
 // The store's own Shopify app (core/shopify-feed.mjs), once installed, is an authorized read connection too.
 let shopifyInstall=()=>null;
 export const useShopifyInstalls=lookup=>{shopifyInstall=lookup;};
+// Credentials the operator entered in the studio (core/store-credentials.mjs); STUDIO_CONNECTORS takes precedence.
+let storedCredentials=()=>null;
+export const useStoredCredentials=lookup=>{storedCredentials=lookup;};
+const wooHeaders=c=>({Authorization:'Basic '+Buffer.from(c.key+':'+c.secret).toString('base64')});
 export function connectorFor(project) {
   let configs;try{configs=JSON.parse(process.env.STUDIO_CONNECTORS||'{}')}catch{throw Error('STUDIO_CONNECTORS אינו JSON תקין');}
+  const stored=!configs[project.id]&&storedCredentials(project.id);
+  if(stored?.platform==='woocommerce'){const host=new URL(project.url).hostname.replace(/^www\./,'');if(new URL(stored.url).hostname.replace(/^www\./,'')!==host)throw Error('החיבור המורשה אינו תואם לדומיין החנות');return {kind:'woocommerce',origin:stored.url,currency:stored.check?.currency||null,headers:wooHeaders(stored)};}
   const install=project.platform==='shopify'&&!configs[project.id]?shopifyInstall(project.id):null;
   const config=configs[project.id]||(install&&{host:new URL(project.url).hostname,shop:install.shop,token:install.token});if(!config)return null;
   const host=new URL(project.url).hostname;
   if(config.host!==host)throw Error('החיבור המורשה אינו תואם לדומיין החנות');
-  if(project.platform==='woocommerce'&&config.key&&config.secret)return {kind:'woocommerce',headers:{Authorization:'Basic '+Buffer.from(config.key+':'+config.secret).toString('base64')}};
+  if(project.platform==='woocommerce'&&config.key&&config.secret)return {kind:'woocommerce',origin:new URL(project.url).origin,currency:null,headers:wooHeaders(config)};
   if(project.platform==='shopify'&&config.token&&config.shop){const shop=new URL('https://'+config.shop);if(!shop.hostname.endsWith('.myshopify.com')||shop.pathname!=='/'||shop.port||shop.username)throw Error('נדרש דומיין myshopify.com לחיבור Shopify');return {kind:'shopify',origin:shop.origin,version:config.apiVersion||'2026-07',headers:{'X-Shopify-Access-Token':config.token,'Content-Type':'application/json'}};}
   if(project.platform==='magento'&&config.token){const stockId=config.stockId??1;if(!Number.isInteger(stockId)||stockId<1||config.storeCode&&!/^[a-zA-Z0-9_]+$/.test(config.storeCode))throw Error('הגדרת stockId/storeCode של Magento לא תקינה');return {kind:'magento',stockId,storeCode:config.storeCode||'default',urlSuffix:config.urlSuffix??'.html',mediaBaseUrl:config.mediaBaseUrl||new URL('/media/catalog/product/',project.url).href,headers:{Authorization:'Bearer '+config.token}};}
   return null;
 }
 const productFields=`id title descriptionHtml handle vendor productType tags status images(first:20){nodes{url}} variants(first:100){nodes{id title sku price compareAtPrice barcode inventoryQuantity inventoryPolicy inventoryItem{tracked} selectedOptions{name value}} pageInfo{hasNextPage endCursor}}`;
 export async function authorizedPage(project,state,fetchSource) {
-  const connector=connectorFor(project);if(!connector)throw Error('נדרש חיבור קריאה מורשה ב־STUDIO_CONNECTORS עבור החנות');
+  const connector=connectorFor(project);if(!connector)throw Error('נדרש חיבור קריאה מורשה עבור החנות (מפתחות API בסטודיו או STUDIO_CONNECTORS)');
   const origin=new URL(project.url).origin;
-  if(connector.kind==='woocommerce'){const url=origin+`/wp-json/wc/v3/products?status=publish&per_page=${state.pageSize}&page=${state.page}`;const rows=JSON.parse(await fetchSource(url,{headers:connector.headers}));if(!Array.isArray(rows))throw Error('WooCommerce API לא החזיר מערך מוצרים');return {rows,platform:'woocommerce',sourceUrl:url,complete:rows.length<state.pageSize};}
+  if(connector.kind==='woocommerce'){const url=connector.origin+`/wp-json/wc/v3/products?status=publish&per_page=${state.pageSize}&page=${state.page}`;const rows=JSON.parse(await fetchSource(url,{headers:connector.headers}));if(!Array.isArray(rows))throw Error('WooCommerce API לא החזיר מערך מוצרים');
+    // The REST product has no currency of its own: the store's comes from the connection check (or one read here).
+    if(state.currency===undefined){state.currency=connector.currency;if(!state.currency)try{state.currency=JSON.parse(await fetchSource(connector.origin+'/wp-json/wc/v3/data/currencies/current',{headers:connector.headers})).code||null;}catch{state.currency=null;}}
+    for(const r of rows)r.currency??=state.currency;
+    return {rows,platform:'woocommerce',sourceUrl:url,complete:rows.length<state.pageSize};}
   if(connector.kind==='magento'){
     const base=origin+'/rest/'+connector.storeCode+'/V1/',read=async path=>JSON.parse(await fetchSource(base+path,{headers:connector.headers}));
     state.categories??=Object.create(null);if(!state.magentoMetaDone){const tree=await read('categories'),walk=n=>{if(n?.id!==undefined)state.categories[n.id]=n.name;for(const child of n?.children_data||[])walk(child)};walk(tree);const currency=await read('directory/currency');state.currency=currency.base_currency_code||null;state.magentoMetaDone=true;}

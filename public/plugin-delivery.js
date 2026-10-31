@@ -27,21 +27,54 @@ export async function renderDelivery({root,project,api,download,streamInto,el,to
  const rolloutCard=el('section',{class:'tk-card tk-wide'});
  const drawRollout=async()=>{
   let r=null,error=null;try{r=await api(base+'/rollout');}catch(err){error=err.message;}
-  const current=r?.percent,slider=el('input',{type:'range',min:0,max:100,step:5,value:current??100,'aria-label':'אחוז הגולשים שמקבלים את Semantix',disabled:!!error}),out=el('b',{},(current??100)+'%');
-  slider.addEventListener('input',()=>{out.textContent=slider.value+'%';});
-  const apply=percent=>guarded(async()=>{
-   const text=percent===null?'להסיר את חלוקת ה־A/B? כל הגולשים יקבלו את מה שהתצורה קובעת.':percent===0?'להחזיר את כל הגולשים לחיפוש המקורי של החנות? Semantix ימשיך רק למדוד.':`לתת את Semantix ל־${percent}% מהגולשים ואת החיפוש המקורי ל־${100-percent}%?`;
-   if(!confirm(text+'\n\nהשינוי נכתב לפרודקשן ומגיע לאתר תוך עד 5 דקות.'))return;
-   await api(base+'/rollout',{percent});toast('נשמר בפרודקשן');drawRollout();
+  const current=r?.percent,start=current??100;
+  const slider=el('input',{type:'range',dir:'ltr',min:0,max:100,step:1,value:start,'aria-label':'אחוז הגולשים שמקבלים את Semantix',disabled:!!error});
+  const number=el('input',{type:'number',min:0,max:100,step:1,value:start,class:'percent',style:'width:5em','aria-label':'אחוז',disabled:!!error});
+  slider.addEventListener('input',()=>{number.value=slider.value;});
+  number.addEventListener('input',()=>{const v=Math.max(0,Math.min(100,Math.round(Number(number.value)||0)));slider.value=v;});
+  // Pinned visitors: these browsers get the chosen search whatever the percentage — the operator's own session.
+  const pinRows=el('div',{class:'tk-pins'});
+  const pinRow=(vid='',variant='semantix')=>{
+   const idIn=el('input',{dir:'ltr',value:vid,placeholder:'vis-…',spellcheck:'false',autocomplete:'off',style:'width:22em','aria-label':'מזהה גולש'});
+   const pick=el('select',{'aria-label':'קבוצה'},el('option',{value:'semantix',selected:variant==='semantix'},'Semantix'),el('option',{value:'native',selected:variant==='native'},'חיפוש מקורי'));
+   const link=el('a',{target:'_blank',rel:'noopener',dir:'ltr',class:'meta'});
+   const sync=()=>{const v=idIn.value.trim();link.textContent=v?'פתח באתר עם המזהה הזה':'';link.href=v?new URL('/?semantix_vid='+encodeURIComponent(v),project.url).href:'#';};
+   idIn.addEventListener('input',sync);sync();
+   const row=el('div',{class:'row'},idIn,pick,el('button',{type:'button',class:'ghost',onclick:()=>row.remove()},'הסר'),link);
+   row.read=()=>[idIn.value.trim(),pick.value];return row;
+  };
+  for(const [vid,variant] of Object.entries(r?.pins||{}))pinRows.append(pinRow(vid,variant));
+  const readPins=()=>{const out={};for(const row of pinRows.children){const [vid,variant]=row.read();if(vid)out[vid]=variant;}return out;};
+  const newTestId=()=>'vis-test-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
+  const apply=(percent,pins=readPins())=>guarded(async()=>{
+   const n=Object.keys(pins).length,list=Object.entries(pins).map(([v,g])=>`  ${v} → ${g==='semantix'?'Semantix':'חיפוש מקורי'}`).join('\n');
+   const text=percent===null?'להסיר את חלוקת ה־A/B (כולל הגולשים הקבועים)? כל הגולשים יקבלו את מה שהתצורה הבנויה קובעת — בקובץ שנבנה עם חלוקה מובנית (כמו סטימצקי) זה Semantix לכולם.'
+    :percent===0?`להחזיר את כל הגולשים לחיפוש המקורי של החנות? Semantix ימשיך רק למדוד.${n?`\nחוץ מ־${n} גולשים קבועים:\n${list}`:''}`
+    :`לתת את Semantix ל־${percent}% מהגולשים ואת החיפוש המקורי ל־${100-percent}%?${n?`\nגולשים קבועים:\n${list}`:''}`;
+   if(!confirm(text+'\n\nהשינוי נכתב לפרודקשן ומגיע לאתר תוך עד 5 דקות (מעמוד הצפייה הבא).'))return;
+   const done=await api(base+'/rollout',percent===null?{percent}:{percent,pins});
+   // The server answers with what it wrote; pins sent but not written = a server that does not know them (restart it).
+   if(percent!==null&&JSON.stringify(Object.entries(done.pins||{}).sort())!==JSON.stringify(Object.entries(pins).sort())){toast('האחוז נשמר, אבל הגולשים הקבועים לא נשמרו בפרודקשן — יש להפעיל מחדש את הסטודיו ולשמור שוב');drawRollout();return;}
+   toast(`נשמר בפרודקשן${done.percent===null?'':`: ${done.percent}%${Object.keys(done.pins||{}).length?` + ${Object.keys(done.pins).length} קבועים`:''}`}`);drawRollout();
   });
+  const pinned=Object.entries(r?.pins||{}),onlyPinned=current===0&&pinned.some(([,g])=>g==='semantix');
+  const status=error?el('p',{class:'error'},error):el('p',{class:'meta'},current===null?'כרגע בפרודקשן: אין חלוקה — כל הגולשים מקבלים את מה שהתצורה הבנויה קובעת.'
+   :`כרגע בפרודקשן: ${onlyPinned?'מצב בדיקה — רק הגולשים הקבועים מקבלים Semantix':`${current}% Semantix · ${100-current}% חיפוש מקורי`}${pinned.length?` · ${pinned.length} גולשים קבועים`:''}${r.updatedAt?' · עודכן '+new Date(r.updatedAt).toLocaleString('he-IL'):''}${r.consistent?'':' · לא לכל המשתמשים אותה חלוקה'}`);
   rolloutCard.replaceChildren(el('h4',{},'שליטה מרחוק: Semantix מול החיפוש המקורי (A/B)'),
-   el('p',{class:'meta'},'קובע מהשרת איזה חלק מהגולשים מקבל את החיפוש של Semantix ואיזה חלק את החיפוש של החנות — בלי התקנה או פריסה מחדש, ב־Shopify וב־WooCommerce. גולש נשאר באותה קבוצה; העלאת האחוז רק מוסיפה גולשים ל־Semantix. גם בקבוצת החיפוש המקורי החיפושים, הקליקים וההוספות לסל נמדדים, כדי שאפשר יהיה להשוות.'),
-   error?el('p',{class:'error'},error):el('p',{class:'meta'},current===null?'כרגע בפרודקשן: אין חלוקה — כל הגולשים מקבלים את מה שהתצורה קובעת.':`כרגע בפרודקשן: ${current}% Semantix · ${100-current}% חיפוש מקורי${r.updatedAt?' · עודכן '+new Date(r.updatedAt).toLocaleString('he-IL'):''}${r.consistent?'':' · לא לכל המשתמשים אותה חלוקה'}`),
-   el('div',{class:'tk-fields'},field('Semantix לגולשים',el('span',{},slider,' ',out))),
+   el('p',{class:'meta'},'קובע מהשרת איזה חלק מהגולשים מקבל את החיפוש של Semantix ואיזה חלק את החיפוש של החנות — בלי התקנה או פריסה מחדש. החלוקה לפי מזהה הגולש: גולש נשאר באותה קבוצה, והעלאת האחוז רק מוסיפה גולשים ל־Semantix. גם בקבוצת החיפוש המקורי החיפושים, הקליקים וההוספות לסל נמדדים, כדי שאפשר יהיה להשוות.'),
+   status,
+   el('div',{class:'tk-fields'},field('Semantix לגולשים',el('span',{},slider,' ',number,' %'))),
+   el('h5',{},'גולשים קבועים (בדיקה)'),
+   el('p',{class:'meta'},'מזהה גולש שמופיע כאן מקבל תמיד את הקבוצה שנבחרה, בלי קשר לאחוז — כך אפשר לבדוק את Semantix באתר החי כשכל השאר על החיפוש המקורי. המזהה של הדפדפן שלך: באתר, בקונסול, localStorage.semantix_visitor_id. או צרו מזהה בדיקה ופתחו את הקישור שלידו — הדפדפן יאמץ אותו. הגולשים הקבועים לא נספרים במדידה.'),
+   pinRows,
+   el('div',{class:'row'},
+    el('button',{type:'button',class:'ghost',disabled:!!error||pinRows.children.length>=20,onclick:()=>pinRows.append(pinRow())},'+ הוסף מזהה'),
+    el('button',{type:'button',class:'ghost',disabled:!!error,onclick:()=>pinRows.append(pinRow(newTestId()))},'+ צור מזהה בדיקה')),
    el('div',{class:'row'},
     el('button',{type:'button',class:'primary',disabled:!!error,onclick:e=>apply(Number(slider.value))(e)},'החל בפרודקשן'),
-    el('button',{type:'button',class:'ghost',disabled:!!error,onclick:apply(0)},'הכל לחיפוש המקורי (0%)'),
-    el('button',{type:'button',class:'ghost',disabled:!!error,onclick:apply(100)},'הכל ל־Semantix (100%)'),
+    el('button',{type:'button',class:'ghost',disabled:!!error,onclick:e=>{const pins=readPins();if(!Object.values(pins).includes('semantix')){toast('הוסיפו קודם מזהה גולש עם Semantix');return;}apply(0,pins)(e);}},'רק לגולשים הקבועים (0% + בדיקה)'),
+    el('button',{type:'button',class:'ghost',disabled:!!error,onclick:e=>apply(0)(e)},'הכל לחיפוש המקורי (0%)'),
+    el('button',{type:'button',class:'ghost',disabled:!!error,onclick:e=>apply(100)(e)},'הכל ל־Semantix (100%)'),
     current!==null&&!error?el('button',{type:'button',class:'ghost',onclick:apply(null)},'הסר חלוקה'):''),
    reportBox);
  };
@@ -58,14 +91,19 @@ export async function renderDelivery({root,project,api,download,streamInto,el,to
    ['חיפושים',n(r.semantix.searches),n(r.native.searches),''],
    ['מחפשים שלחצו על מוצר',pct(r.semantix.searchClickRate),pct(r.native.searchClickRate),lift(r.lift.searchClickRate)],
    ['מחפשים שהוסיפו לסל',pct(r.semantix.searchCartRate),pct(r.native.searchCartRate),lift(r.lift.searchCartRate)],
+   ['הוספה לסל שאושרה על ידי החנות',pct(r.semantix.searchConfirmedCartRate),pct(r.native.searchConfirmedCartRate),lift(r.lift.searchConfirmedCartRate)],
    ['מחפשים שרכשו (המרה מחיפוש)',pct(r.semantix.searchConversion),pct(r.native.searchConversion),lift(r.lift.searchConversion)],
    ['כל הגולשים שרכשו',pct(r.semantix.conversion),pct(r.native.conversion),lift(r.lift.conversion)],
    ['הזמנות',n(r.semantix.orders),n(r.native.orders),''],
+   ['הזמנות שמקורן בחיפוש (לפי מזהה חיפוש)',n(r.semantix.attributedOrders),n(r.native.attributedOrders),''],
    ['הכנסות',money(r.semantix.revenue),money(r.native.revenue),''],
    ['הכנסה לגולש',money(r.semantix.revenuePerVisitor),money(r.native.revenuePerVisitor),''],
    ['הזמנה ממוצעת',money(r.semantix.averageOrder),money(r.native.averageOrder),'']];
   const missing=Object.entries(r.sources||{}).filter(([,v])=>v.status!=='ok').map(([k])=>k);
+  const WHY={'no-verified-orders':'אין עדיין הזמנות מאומתות','split-mismatch':`החלוקה בפועל (${pct(r.quality?.split?.share)}) לא תואמת את ההגדרה (${pct(r.quality?.split?.expectedShare)})`,'split-changed-in-window':'החלוקה השתנתה בתוך התקופה','group-conflicts':`${n(r.quality?.conflicts)} גולשים נראו בשתי הקבוצות`};
+  const caution=r.quality&&!r.quality.attributable?el('p',{class:'error'},'אי אפשר עדיין לייחס הבדל בהמרה לחיפוש: '+r.quality.reasons.map(x=>WHY[x]||x).join(' · ')):null;
   reportResult.replaceChildren(
+   ...(caution?[caution]:[]),
    el('table',{class:'tk-table tk-compare'},el('thead',{},el('tr',{},el('th',{},`${r.days} הימים האחרונים`),el('th',{},'Semantix'),el('th',{},'חיפוש מקורי'),el('th',{},'הפרש'))),
     el('tbody',{},...rows.map(([label,a,b,d])=>el('tr',{},el('th',{},label),el('td',{},a),el('td',{},b),el('td',{},d))))),
    el('p',{class:'meta'},`מחוץ לקבוצות (גולשים בלי שיוך): ${n(r.unknown.searches)} חיפושים${r.unknown.noSession?` (מתוכם ${n(r.unknown.noSession)} בלי מזהה גולש)`:''} · ${n(r.unknown.orders)} הזמנות · ${money(r.unknown.revenue)}.${missing.length?' מקורות שלא נקראו: '+missing.join(', ')+'.':''} "מובהק" = הפער גדול ממה שמקרה מסביר (95%).`));

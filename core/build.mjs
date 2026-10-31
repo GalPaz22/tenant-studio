@@ -15,6 +15,8 @@ import {domainPack} from './domains.mjs';
 import {extractMerchantFacts,applyMerchantFacts} from './merchant-facts.mjs';
 
 export const STAGES=[['source','בדיקת מקור'],['collect','סריקת קטלוג'],['normalize','נרמול ומפרטים'],['taxonomy','טקסונומיה'],['research','מחקר חנות ותחום'],['enrich','העשרת מוצרים'],['tags','סיווג תגיות'],['cards','כרטיסי מוצר'],['context','קונטקסט לחנות'],['index','בניית אינדקס'],['validate','בדיקות מוכנות']];
+// Stages an operator may defer (e.g. enrich later): the build continues on what the source and the previous build already give.
+export const SKIPPABLE=['research','enrich','tags'];
 export function validateBuildOptions(value={},platform='woocommerce') {
   const sourceType=value.sourceType||(['woocommerce','shopify'].includes(platform)?'platform':'sitemap');
   if(!['platform','authorized','feed','sitemap','crawl'].includes(sourceType))throw Error('מקור קטלוג לא תקין');
@@ -25,11 +27,12 @@ export function validateBuildOptions(value={},platform='woocommerce') {
   let sitemapFilter='';if(value.sitemapFilter){sitemapFilter=String(value.sitemapFilter).slice(0,200);try{new RegExp(sitemapFilter,'i')}catch{throw Error('מסנן מפת אתר לא תקין')}}
   const politeMs=value.politeMs??0;if(!Number.isInteger(politeMs)||politeMs<0||politeMs>10000)throw Error('מגבלה לא תקינה: politeMs');
   if(value.sourceUrls!==undefined&&(!Array.isArray(value.sourceUrls)||value.sourceUrls.length>30))throw Error('עד 30 מקורות מחקר');
-  return {sourceType,feedUrl,sitemapUrl,sourceUrls:(value.sourceUrls||[]).map(url),authoritative:value.authoritative===true,
+  if(value.skipStages!==undefined&&(!Array.isArray(value.skipStages)||value.skipStages.some(k=>!SKIPPABLE.includes(k))))throw Error('ניתן לדלג רק על: '+SKIPPABLE.join(', '));
+  return {sourceType,feedUrl,skipStages:[...new Set(value.skipStages||[])],sitemapUrl,sourceUrls:(value.sourceUrls||[]).map(url),authoritative:value.authoritative===true,
     research:value.research!==false,productResearch:value.productResearch===true,scanPages:value.scanPages!==false,merchantFacts:value.merchantFacts!==false,vectors:value.vectors===true,
     maxFetches:number('maxFetches',10000,1000000),maxModelCalls:number('maxModelCalls',750,100000),maxMinutes:number('maxMinutes',120,10080),
     indexTarget:value.indexTarget==='mongo'?'mongo':'local',
-    sitemapFilter,scraper:value.scraper===true,politeMs,verifySource:value.verifySource!==false,maxPages:number('maxPages',20000,100000)};
+    sitemapFilter,scraper:value.scraper===true,politeMs,verifySource:value.verifySource!==false,maxPages:number('maxPages',20000,100000),sitemapPasses:number('sitemapPasses',1,30)};
 }
 export function newBuild(project,options) {
   return {id:randomUUID(),projectId:project.id,status:'queued',options,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),
@@ -37,6 +40,8 @@ export function newBuild(project,options) {
     usage:{fetches:0,modelCalls:0,inputTokens:0,outputTokens:0,elapsedMs:0},baseBuildId:project.latestBuildId||null,pinnedProfile:project.revisions.at(-1)?.profile||null,processorVersion:1};
 }
 class Stop extends Error {constructor(status,message){super(message);this.status=status;}}
+// Extends Stop so the per-item catch blocks rethrow it; stage() turns it into a skipped stage.
+class Skip extends Stop {constructor(){super('running','השלב דולג');}}
 const counts=values=>values.reduce((out,x)=>{out[x]=(out[x]||0)+1;return out},Object.create(null));
 const safeStrings=(v,max=100)=>Array.isArray(v)?v.filter(x=>typeof x==='string').map(x=>x.slice(0,500)).slice(0,max):[];
 
@@ -45,8 +50,10 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
   const previous=run.baseBuildId?await repo.asset(run.baseBuildId,'bundle'):null;
   const previousRun=run.baseBuildId?await repo.read(run.baseBuildId):null;
   async function control(){const now=Date.now();run.usage.elapsedMs+=now-tick;tick=now;const c=await repo.control(run.id);
+    for(const key of Array.isArray(c.skip)?c.skip:[])if(SKIPPABLE.includes(key)&&!run.options.skipStages?.includes(key))run.options.skipStages=[...(run.options.skipStages||[]),key];
     if(c.action==='pause')throw new Stop('paused','הריצה נעצרה לבקשתך; ניתן להמשיך');
     if(c.action==='cancel')throw new Stop('cancelled','הריצה בוטלה');
+    if(run.options.skipStages?.includes(run.stage)&&run.stages.find(s=>s.key===run.stage)?.status==='running')throw new Skip();
     if(run.usage.elapsedMs>=run.options.maxMinutes*60000)throw new Stop('paused','הגעת למגבלת זמן; הגדל תקציב והמשך');}
   async function report(text){run.message=text;run.events??=[];run.events.push({text,at:new Date().toISOString()});run.events=run.events.slice(-100);await save();}
   async function fetcher(url,options={}){await control();const cacheable=options.publicCache===true&&!options.headers&&!options.method&&new URL(url).origin!==new URL(project.url).origin;
@@ -56,9 +63,11 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
   async function call(fn,...args){await control();if(run.usage.modelCalls>=run.options.maxModelCalls)throw new Stop('paused','הגעת למגבלת קריאות מודל; הגדל תקציב והמשך');run.usage.modelCalls++;await save();
     const response=await fn(...args);const u=response.usage||{};run.usage.inputTokens+=u.inputTokens||u.promptTokenCount||0;run.usage.outputTokens+=u.outputTokens||u.candidatesTokenCount||0;return response;}
   const generateModel=args=>call(model,args);
-  async function stage(key,fn){await control();const s=run.stages.find(s=>s.key===key);if(s.status==='completed')return;
-    run.stage=key;s.status='running';s.startedAt??=new Date().toISOString();await report(s.label);
-    await fn(s);s.status='completed';s.completedAt=new Date().toISOString();await save();}
+  async function stage(key,fn,skip){await control();const s=run.stages.find(s=>s.key===key);if(['completed','skipped'].includes(s.status))return;
+    run.stage=key;
+    if(!skip||!run.options.skipStages?.includes(key)){s.status='running';s.startedAt??=new Date().toISOString();await report(s.label);
+      try{await fn(s);s.status='completed';s.completedAt=new Date().toISOString();await save();return;}catch(e){if(!(e instanceof Skip))throw e;}}
+    s.status='skipped';s.skippedAt=new Date().toISOString();await skip(s);run.warnings.push(`השלב "${s.label}" דולג; אפשר להריץ אותו בבנייה הבאה`);await report(s.label+' — דולג');}
   const checkpoint=()=>save();let bundle;
   try {
     run.status='running';run.finishedAt=null;await save();
@@ -77,7 +86,7 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
         await control();const raw=await asset(collection.pages[state.page]);
         while(state.row<raw.rows.length){
          await control();const products=[],chunk=raw.rows.slice(state.row,state.row+50);
-         for(const row of chunk){try{if(run.options.sourceType==='authorized'&&project.platform==='woocommerce'&&row.variations?.length){const connector=connectorFor(project),details=[];for(let page=1;;page++){await control();const variants=JSON.parse(await fetcher(new URL(project.url).origin+'/wp-json/wc/v3/products/'+row.id+'/variations?per_page=100&page='+page,{headers:connector.headers}));if(!Array.isArray(variants))throw Error('וריאציות WooCommerce לא תקינות');details.push(...variants.map(v=>({id:String(v.id),sku:v.sku,price:v.price===''?null:Number(v.price),regularPrice:v.regular_price===''?null:Number(v.regular_price),stockStatus:v.stock_status,attributes:v.attributes})));if(variants.length<100)break;}row.variantDetails=details;}
+         for(const row of chunk){try{if(run.options.sourceType==='authorized'&&raw.platform==='woocommerce'&&row.variations?.length){const connector=connectorFor(project),details=[];for(let page=1;;page++){await control();const variants=JSON.parse(await fetcher(connector.origin+'/wp-json/wc/v3/products/'+row.id+'/variations?per_page=100&page='+page,{headers:connector.headers}));if(!Array.isArray(variants))throw Error('וריאציות WooCommerce לא תקינות');details.push(...variants.map(v=>({id:String(v.id),sku:v.sku,price:v.price===''?null:Number(v.price),regularPrice:v.regular_price===''?null:Number(v.regular_price),stockStatus:v.stock_status,attributes:v.attributes})));if(variants.length<100)break;}row.variantDetails=details;}
            let product=normalizeRecord(row,raw.platform,new URL(project.url).origin,raw.sourceUrl);const pack=domainPack(project);if(pack)product=pack.processProduct(product);products.push(product);
           }catch(e){if(e instanceof Stop)throw e;state.errors.push({id:row.id||row.sku||null,error:e.message});}}
          const key='normalized-'+state.page+'-'+state.row;await asset(key,products);state.keys.push(key);state.row+=chunk.length;s.done+=products.length;await checkpoint();
@@ -114,7 +123,8 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
       const urls=[...new Set([...run.options.sourceUrls,...home.policyLinks||[]])];state.urls=urls;s.total=urls.length;
       while(state.cursor<urls.length){await control();const url=urls[state.cursor];try{await asset('research-source-'+state.cursor,extractPage(await fetcher(url,{maxBytes:PAGE_BYTES}),url))}catch(e){if(e instanceof Stop)throw e;run.errors.push({stage:'research',optional:true,url,error:e.message});await asset('research-source-'+state.cursor,{url,text:'',error:e.message})}state.cursor++;s.done=state.cursor;await checkpoint();}
       await asset('store-source',home);
-    });
+    },async()=>{const state=run.checkpoints.research??={cursor:0};if(!state.domainDone)await asset('domain-research',{text:'',sources:[],claims:[],skipped:true});
+      state.urls=(state.urls||[]).slice(0,state.cursor);await asset('store-source',await asset('homepage'));});
     await stage('enrich',async s=>{const products=await asset('products'),state=run.checkpoints.enrich??={cursor:0};const explicit=[];
       for(let i=0;i<run.options.sourceUrls.length;i++)explicit.push(await asset('research-source-'+i));s.total=products.length;
       const prior=new Map((previous?.catalog.products||[]).map(p=>[p.id,p]));
@@ -155,6 +165,14 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
       }
       const enriched=[];for(const p of products){let result=(await asset('enriched-'+hash(p.id).slice(0,24))).product;const facts=merchantFacts.get(p.id);if(facts&&!result.extractedFacts){result=applyMerchantFacts(result,facts.facts);result.merchantFactsError=facts.error||null;result.contentHash=hash([result.contentHash,result.specifications,result.extractedFacts]);}enriched.push(result);}await asset('enriched-products',enriched);
       run.metrics.withSpecs=enriched.filter(p=>Object.keys(p.specifications).length).length;run.metrics.withDescription=enriched.filter(p=>p.description).length;run.metrics.externalFacts=enriched.reduce((n,p)=>n+(p.externalFacts||[]).filter(f=>f.status==='verified').length,0);
+    },async s=>{const products=await asset('products'),state=run.checkpoints.enrich||{cursor:0},prior=new Map((previous?.catalog.products||[]).map(p=>[p.id,p]));
+      // Keep whatever is already enriched — earlier in this run, or in the previous build when the source product is unchanged.
+      const enriched=[];let kept=0;for(const [i,p] of products.entries()){let result=null;
+        if(i<state.cursor)try{const done=await asset('enriched-'+hash(p.id).slice(0,24));if(done.inputHash===p.contentHash)result=done.product;}catch(e){if(e.code!=='ENOENT')throw e;}
+        const old=prior.get(p.id);if(!result&&old?.sourceContentHash===p.contentHash&&old.enrichmentStatus!=='skipped')result={...old,fetchedAt:p.fetchedAt};
+        if(result)kept++;enriched.push(result||{...p,externalFacts:[],enrichmentStatus:'skipped'});}
+      await asset('enriched-products',enriched);s.done=kept;s.total=products.length;run.metrics.reusedProducts=kept;
+      run.metrics.withSpecs=enriched.filter(p=>Object.keys(p.specifications||{}).length).length;run.metrics.withDescription=enriched.filter(p=>p.description).length;run.metrics.externalFacts=enriched.reduce((n,p)=>n+(p.externalFacts||[]).filter(f=>f.status==='verified').length,0);
     });
     await stage('tags',async s=>{
       const profile=await asset('profile'),products=await asset('enriched-products'),tags=Object.entries(profile.tagDefinitions||{}),state=run.checkpoints.tags??={batch:0};
@@ -180,12 +198,17 @@ export async function executeBuild(project,run,repo,{fetchSource=fetchPublic,age
       const all=[];for(let g=0;g<Math.ceil(tags.length/8);g++)for(let b=0;b<Math.ceil(products.length/batchSize);b++)all.push(...await asset('tag-matrix-'+g+'-'+b));
       const assignments=Object.create(null);for(const [tag,rule] of tags){const decisions=all.filter(d=>d.tag===tag);assignments[tag]={definitionHash:hash(rule),decisions,matchedIds:decisions.filter(d=>d.status==='matched').map(d=>d.productId),productsScanned:products.length,failedBatches:Math.ceil(decisions.filter(d=>d.status==='failed').length/batchSize),counts:counts(decisions.map(d=>d.status))};}
       await asset('assignments',assignments);run.metrics.taggedProducts=new Set(Object.values(assignments).flatMap(a=>a.matchedIds)).size;run.metrics.tagDecisions=counts(all.map(d=>d.status));s.done=s.total;
+    },async s=>{const profile=await asset('profile'),products=await asset('enriched-products'),ids=new Set(products.map(p=>p.id)),assignments=Object.create(null);
+      // Previous decisions for an unchanged definition still hold; everything else waits for a build that runs this stage.
+      for(const [tag,rule] of Object.entries(profile.tagDefinitions||{})){const a=previous?.tagAssignments?.[tag],decisions=a?.definitionHash===hash(rule)?(a.decisions||[]).filter(d=>ids.has(d.productId)):[];
+        assignments[tag]={definitionHash:hash(rule),decisions,matchedIds:decisions.filter(d=>d.status==='matched').map(d=>d.productId),productsScanned:new Set(decisions.map(d=>d.productId)).size,failedBatches:0,counts:counts(decisions.map(d=>d.status)),skipped:true};}
+      await asset('assignments',assignments);run.metrics.taggedProducts=new Set(Object.values(assignments).flatMap(a=>a.matchedIds)).size;s.done=run.metrics.taggedProducts;s.total=products.length;
     });
     await stage('cards',async s=>{const products=await asset('enriched-products'),profile=await asset('profile'),tagAssignments=await asset('assignments');
       const normalized=createDraftRuntime({...project,productCards:null,searchIndex:null,catalog:{products},tagAssignments},{number:project.revisions.length+1,profile}).products;
       const byId=new Map(products.map(p=>[p.id,p])),decisionsById=new Map();for(const a of Object.values(tagAssignments))for(const d of a.decisions){if(!decisionsById.has(d.productId))decisionsById.set(d.productId,[]);decisionsById.get(d.productId).push(d);}
       const cards=normalized.map(p=>{const raw=byId.get(p.id);return {...p,sku:raw.sku||p.sku,brand:raw.brand,model:raw.model,mpn:raw.mpn,gtin:raw.gtin,images:raw.images,variants:raw.variants,priceRange:raw.priceRange,
-        summary:(raw.description||'').slice(0,400),description:raw.description,specifications:raw.specifications,evidence:raw.evidence,extractedFacts:raw.extractedFacts,externalFacts:raw.externalFacts,enrichmentStatus:raw.enrichmentStatus,
+        summary:String(raw.description||'').slice(0,400),description:raw.description,specifications:raw.specifications,evidence:raw.evidence,extractedFacts:raw.extractedFacts,externalFacts:raw.externalFacts,enrichmentStatus:raw.enrichmentStatus,
         tagDecisions:decisionsById.get(p.id)||[],buildId:run.id};});
       await asset('cards',cards);s.done=cards.length;s.total=cards.length;run.metrics.cards=cards.length;});
     await stage('context',async s=>{const profile=await asset('profile'),products=await asset('enriched-products'),home=await asset('homepage');let domain={text:'',sources:[],claims:[]};if(run.options.research)domain=await asset('domain-research');

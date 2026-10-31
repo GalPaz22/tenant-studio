@@ -1,4 +1,6 @@
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {patchTakeoverEngine} from './takeover-engine.mjs';
 import {apiBase as defaultApiBase} from './takeover-control.mjs';
 
 // The full search takeover as a Shopify Theme App Extension (an app embed in <head>). Unlike the CDN loader, the export
@@ -130,6 +132,7 @@ export function buildShopifyTakeover(project,{apiBase,apiKey='',engine,now=new D
  if(!config)throw Error('יש להריץ קודם זיהוי של החלפת החיפוש');
  if(config.platform!=='shopify')throw Error('הייצוא הזה מיועד לחנות Shopify');
  if(typeof engine!=='string'||!engine.includes('SemantixSettings'))throw Error('קוד המנוע לא נטען');
+ engine=patchTakeoverEngine(engine);
  const base=httpsOrigin(apiBase||defaultApiBase());
  apiKey=String(apiKey||'').trim();
  if(apiKey&&!/^[A-Za-z0-9_-]{8,128}$/.test(apiKey))throw Error('מפתח אתר לא תקין');
@@ -219,72 +222,73 @@ ${f.autocomplete?`- אוטוקומפליט: הרכיב המקורי מוסתר (
 
 // The same takeover as a WordPress plugin for a WooCommerce store: a small configuration script in <head> (the written
 // configuration + BOOT) and the engine beside it. Activating the plugin is the whole install.
-export function buildWooTakeover(project,{apiBase,apiKey='',engine,now=new Date()}={}){
+export function buildWooTakeover(project,{apiBase,apiKey='',engine,now=new Date(),configurable=false,productIdPrefix='woo_product_'}={}){
  const config=project.takeover?.siteConfig;
  if(!config)throw Error('יש להריץ קודם זיהוי של החלפת החיפוש');
  if(config.platform!=='woocommerce')throw Error('הייצוא הזה מיועד לחנות WooCommerce');
  if(typeof engine!=='string'||!engine.includes('SemantixSettings'))throw Error('קוד המנוע לא נטען');
+ engine=patchTakeoverEngine(engine);
  const base=httpsOrigin(apiBase||defaultApiBase());
  apiKey=String(apiKey||'').trim();
- if(!/^[A-Za-z0-9_-]{8,128}$/.test(apiKey))throw Error('לתוסף WooCommerce נדרש מפתח האתר של החנות (חברו אותה לדאשבורד או הזינו מפתח)');
+ if(!(configurable&&!apiKey)&&!/^[A-Za-z0-9_-]{8,128}$/.test(apiKey))throw Error('לתוסף WooCommerce נדרש מפתח האתר של החנות (חברו אותה לדאשבורד או הזינו מפתח)');
  const host=new URL(project.url).hostname,slug=shopSlug(project.url),json=inline(config);
- const version=createHash('sha256').update(json).update(engine).update(base).update(apiKey).digest('hex').slice(0,12);
+ if(!['','woo_product_'].includes(productIdPrefix))throw Error('פורמט מזהה מוצר לא נתמך');
+ const trackingPhp=readFileSync(new URL('./woo-tracking.php',import.meta.url),'utf8'),trackingJs=readFileSync(new URL('./woo-tracking-browser.js',import.meta.url),'utf8');
+ const version=createHash('sha256').update(json).update(engine).update(base).update(apiKey).update(productIdPrefix).update(trackingPhp).update(trackingJs).update(BOOT).digest('hex').slice(0,12);
  // engineSrc is filled in by the page (the plugin's own URL), so the files can be served from any path.
  const boot=`window.SemantixSettings={apiBase:${inline(base)},apiKey:${inline(apiKey)},engineSrc:(document.currentScript&&document.currentScript.src||'').replace(/semantix-config\\.js(\\?.*)?$/,'${ASSET}?v=${version}'),version:${inline(version)},endpoints:${inline(ENDPOINTS)},
 siteConfig:${json}};
-${BOOT}
+if(window.SemantixWooTracking){window.SemantixSettings.apiBase=window.SemantixWooTracking.apiBase;window.SemantixSettings.apiKey=window.SemantixWooTracking.apiKey;}
+if(window.SemantixSettings.apiKey){${BOOT}}
 `;
  const php=`<?php
 /**
  * Plugin Name: Semantix Search
- * Description: Replaces the store search (suggestions and the results page) with Semantix. Configured in Semantix Studio for ${host}.
- * Version: 1.0.${now.toISOString().slice(0,10).replace(/-/g,'')}
+ * Description: Search takeover and session analytics for WooCommerce: clicks, successful carts and paid orders.
+ * Version: 1.1.${now.toISOString().slice(0,10).replace(/-/g,'')}
  * Requires Plugins: woocommerce
  */
 if (!defined('ABSPATH')) exit;
-// Printed first in <head>: the configuration script decides before first paint whether this visitor gets Semantix
-// results, then loads the engine. Both files are static.
+define('SEMANTIX_API_BASE', '${base.replace(/'/g,"\\'")}');
+define('SEMANTIX_SITE_KEY', '${apiKey}');
+define('SEMANTIX_PRODUCT_ID_PREFIX', '${productIdPrefix}');
+require_once __DIR__ . '/commerce.php';
+add_action('before_woocommerce_init', function () {
+    $util = '\\Automattic\\WooCommerce\\Utilities\\FeaturesUtil';
+    if (class_exists($util)) {
+        $util::declare_compatibility('custom_order_tables', __FILE__, true);
+    }
+});
 add_action('wp_head', function () {
     if (is_admin()) return;
+    $options = semantix_tracking_options();
+    if (empty($options['api_key'])) return;
+    $tracking = array('apiBase' => $options['api_base'], 'apiKey' => $options['api_key'], 'serverCartTracking' => true, 'nativeClickTracking' => true, 'productIdPrefix' => SEMANTIX_PRODUCT_ID_PREFIX);
+    echo '<script>window.SemantixWooTracking=' . wp_json_encode($tracking, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>' . "\\n";
+    echo '<script src="' . esc_url(plugins_url('assets/semantix-commerce.js', __FILE__) . '?v=${version}') . '"></script>' . "\\n";
     echo '<script src="' . esc_url(plugins_url('assets/semantix-config.js', __FILE__) . '?v=${version}') . '"></script>' . "\\n";
 }, 1);
-// The completed order, once (a mark on the order stops a refresh of the page from reporting it again): sent from the
-// shopper's browser with the visitor id, the last search and the A/B group the engine keeps there.
-add_action('woocommerce_thankyou', function ($order_id) {
-    $order = wc_get_order($order_id);
-    if (!$order || $order->get_meta('_semantix_reported')) return;
-    $order->update_meta_data('_semantix_reported', '1');
-    $order->save();
-    $items = array();
-    foreach ($order->get_items() as $item) {
-        $items[] = array(
-            'product_id' => (string) $item->get_product_id(),
-            'variant_id' => $item->get_variation_id() ? (string) $item->get_variation_id() : null,
-            'name' => $item->get_name(),
-            'quantity' => (int) $item->get_quantity(),
-            'price' => (float) $order->get_item_total($item, true),
-        );
-    }
-    $data = array(
-        'event_type' => 'checkout_completed', 'platform' => 'woocommerce', 'source' => 'order-received',
-        'order_id' => (string) $order->get_order_number(), 'total_price' => (float) $order->get_total(),
-        'currency' => $order->get_currency(), 'line_items' => $items,
-    );
-    echo '<script>(function(d){try{var S=window.SemantixSettings;if(!S)return;var g=null;try{g=JSON.parse(localStorage.getItem("semantix_ab_current")||"null");}catch(e){}'
-        . 'd.session_id=localStorage.getItem("semantix_visitor_id");d.search_query=sessionStorage.getItem("semantix_last_query");if(g)d.ab_tests=g;'
-        . 'fetch(S.apiBase+S.endpoints.searchToCart,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json","X-API-Key":S.apiKey},body:JSON.stringify({document:d})});}catch(e){}})('
-        . wp_json_encode($data) . ');</script>' . "\\n";
-}, 20, 1);
 `;
  const f=config.features||{},r=config.replace||{};
- const manifest={platform:'woocommerce',slug,store:host,version,delivery:'wordpress-plugin',status:'generated-not-installed',apiBase:base,siteKey:'included',
-  features:{autocomplete:f.autocomplete===true,resultsPage:f.fullReplace===true?(r.scope==='main'?'main':'grid'):'off',addToCart:config.addToCart?.mode||'off'},engineBytes:Buffer.byteLength(engine),exportedAt:now.toISOString()};
+ const manifest={platform:'woocommerce',slug,store:host,version,delivery:'wordpress-plugin',status:'generated-not-installed',apiBase:base,siteKey:apiKey?'included':'set-in-wordpress-settings',analyticsProductIdPrefix:productIdPrefix,
+  features:{autocomplete:f.autocomplete===true,resultsPage:f.fullReplace===true?(r.scope==='main'?'main':'grid'):'off',addToCart:config.addToCart?.mode||'off',clicks:true,serverCarts:true,serverPurchases:true,sessionIdleMinutes:30},engineBytes:Buffer.byteLength(engine),exportedAt:now.toISOString()};
  const install=`# Semantix Search — ${host}
 
 תוסף WordPress שמחליף את החיפוש של החנות: הצעות החיפוש ודף תוצאות החיפוש.
 
 ## התקנה
-בוורדפרס: תוספים ← תוסף חדש ← העלאת תוסף ← העלו את ה־ZIP ← הפעילו את Semantix Search. להסרה: השביתו את התוסף.
+בוורדפרס: תוספים ← תוסף חדש ← העלאת תוסף ← העלו את ה־ZIP ← הפעילו את Semantix Search. הגדרות ← Semantix Search: הזינו את מפתח האתר הציבורי. כתובת ה־API המוגדרת מראש היא ${base}, של dashboard-server הקיים; משנים אותה רק אם השרת הקיים משתמש בכתובת אחרת. להסרה: השביתו את התוסף.
+
+## חיבור לתשתית הקיימת
+התוסף משתמש ב־dashboard-server ובמסד הנתונים הקיימים של החנות. חיפושים נשלחים אל /search, קליקים אל /product-click, והוספות לעגלה ורכישות אל /search-to-cart. לא נדרש שרת חדש או שירות מדידה נפרד. תיקון מניעת הכפילויות שהוכן ב־dashboard-server הוא עדכון קוד בשירות הקיים, ומגיע לפרודקשן בתהליך העדכון הרגיל שלו.
+
+## מדידה לפי סשן
+אותו session_id נשלח בחיפושים, קליקים, הוספות לעגלה ורכישות; סשן מתחלף לאחר 30 דקות ללא פעילות. נשמרים גם החיפוש האחרון וקבוצת A/B. קליקים בכרטיסי Semantix מדווחים מהמנוע; בכרטיסי WooCommerce מקוריים מדווחים כשמזהה המוצר זמין. הוספות נשלחות רק מה-hook של הוספה שהצליחה. רכישות נשלחות מהשרת רק להזמנה ששולמה, גם ללא חזרה לדף התודה, עם סכום, מטבע ופריטים. השיוך נשמר במטא של ההזמנה עבור checkout רגיל ו־Blocks/Store API.
+
+האירועים נשמרים בתור, עם עד 8 ניסיונות שליחה. הזמנה מסומנת כמדווחת רק לאחר תשובת 2xx; מזהה האירוע וחותמת הזמן נשמרים בניסיון חוזר. Action Scheduler או WP-Cron חייבים לפעול; כשניסיונות מוצו האירוע נשמר באפשרויות semantix_event_* עם last_status לבדיקה ושיגור חוזר. אין כאן הבטחת exactly-once מול אובדן תשובה ברשת; הדוחות מנכים רכישות כפולות לפי order_id. חיפוש קודם הוא שיוך סשן, לא הוכחה שהחיפוש גרם לרכישה. אירוע ללא סשן נשלח ללא המצאת שיוך.
+
+## בדיקת התקנה
+בדקו חיפוש עם תוצאות וללא תוצאות; קליק למוצר; הוספה מוצלחת והוספה שנכשלה; checkout רגיל ו־Blocks; תשלום עם הפניה החוצה, רענון דף תודה וניסיון שליחה חוזר. ודאו אותו session_id באוספים queries, product_clicks, cart ו־checkout_events. הזמנה ממתינה או שנכשלה אינה רכישה. לאחר 30 דקות ללא פעילות צריך להתחיל סשן חדש. לעיצוב והתנהגות החנות אפשר לייצא מהסטודיו חבילה מותאמת עם התצורה שזוהתה.
 
 ## שליטה מרחוק (בלי התקנה מחדש)
 התצורה שבתוסף היא הבסיס. מעליה מונחת תצורת החנות משרת החיפוש (POST /site-config), שנשמרת בדפדפן ל־5 דקות: כיבוי, חלוקת A/B בין Semantix לחיפוש המקורי, תיקון סלקטור או תבנית כרטיס — מהסטודיו, והשינוי מגיע לאתר תוך עד 5 דקות. רק מנוע חדש דורש התקנה של ZIP חדש.
@@ -294,6 +298,8 @@ add_action('woocommerce_thankyou', function ($order_id) {
 `;
  const files={
   'semantix-search/semantix-search.php':php,
+  'semantix-search/commerce.php':trackingPhp,
+  'semantix-search/assets/semantix-commerce.js':trackingJs,
   'semantix-search/assets/semantix-config.js':boot,
   ['semantix-search/assets/'+ASSET]:engine,
   'semantix-search/INSTALL.md':install,

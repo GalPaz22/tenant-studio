@@ -4,11 +4,11 @@ import {readCustomerAnalytics,compactAnalytics} from './customer-analytics.mjs';
 import {refreshClientProfile} from './client-brain.mjs';
 import {createDraftRuntime} from '../runtime.mjs';
 import {inTarget} from './ranking.mjs';
-import {askPlanner,plannerModel} from '../model.mjs';
+import {askReport,reportModel} from '../model.mjs';
 const kinds=['ranking','pinning','processing','index','function','pipeline','tracking','catalog'];
 const clip=(v,n=1000)=>String(v||'').slice(0,n);
 export const performanceFingerprint=p=>hash({profile:p.revisions?.at(-1)?.profile,cards:p.productCards,index:p.searchIndex?.contentHash});
-export async function reviewSearchPerformance(p,{days=30,planner=askPlanner,model=plannerModel(),analytics=readCustomerAnalytics,clientProfile=refreshClientProfile,search,onEvent=async()=>{}}={}){
+export async function reviewSearchPerformance(p,{days=30,planner=askReport,model=reportModel(),analytics=readCustomerAnalytics,clientProfile=refreshClientProfile,search,onEvent=async()=>{}}={}){
  if(!p.revisions?.length||!p.productCards?.length)throw Error('נדרש קטלוג עם גרסה שמורה');
  if(!Number.isInteger(days)||days<1||days>90)throw Error('טווח ימים: 1–90');
  await onEvent({type:'note',text:'מחבר פרופיל לקוח, נתוני שימוש וכללי חיפוש'});

@@ -1,6 +1,7 @@
 import {hostname} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {seedCrawl,runCrawl,readClickedUrls,readCatalogUrls} from './site-crawler.mjs';
+import {productKey,DEFAULT_SPEC} from './scraper-builder.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 // One worker serves every tenant whose crawl the studio set to "running". It needs no local project files: the
@@ -9,14 +10,15 @@ export async function workOnce(store,{owner,projectId=null,seed=seedCrawl,run=ru
  const job=await store.claim(owner,projectId);if(!job)return false;
  const id=job._id,settings={rateMs:1000,sources:{clicks:true,sitemap:true,catalog:true},...job.settings};
  let state=await store.read(id);
- if(job.reseedRequested||!state.queue.length){
+ if(job.rescanRequested||job.reseedRequested||!state.queue.length){
   log(id,'seeding',job.target?.url);
   const project={id,url:job.target.url,existingClient:job.target.dbName?{dbName:job.target.dbName}:null};
   const fresh=await seed(project,{sources:settings.sources,clicks:readClickedUrls,catalogUrls:readCatalogUrls,spec:job.target.spec||null,...seedOptions});
-  // Pages already crawled stay; only new pages are queued.
-  const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(u.split('/').pop()));
-  state={...state,...fresh,products:state.products,errors:state.errors,startedAt:state.startedAt||fresh.startedAt,next:0};
-  await store.save(state,{queue:true});await store.control(id,{reseedRequested:false});
+  // Keep collected data available for merging. A full rescan refreshes those pages;
+  // discovery only skips known product keys, including URLs with a trailing slash.
+  if(!job.rescanRequested){const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(productKey(u,job.target.spec||DEFAULT_SPEC)));}
+  state={...state,...fresh,products:state.products,errors:job.rescanRequested?{}:state.errors,startedAt:job.rescanRequested?fresh.startedAt:state.startedAt||fresh.startedAt,next:0};
+  await store.save(state,{queue:true});await store.control(id,{reseedRequested:false,rescanRequested:false});
   log(id,'queue',state.queue.length,JSON.stringify(state.sources));
  }
  let stop=false,exitReason=null;

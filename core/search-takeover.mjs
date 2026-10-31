@@ -21,6 +21,14 @@ const PLATFORM_SEARCH={
  woocommerce:{path:'/',param:'s',extra:{post_type:'product'}},
  shopify:{path:'/search',param:'q',extra:{type:'product'}},
 };
+// The results page number: WordPress reads paged, Shopify page, Magento p.
+const PAGE_PARAM={woocommerce:'paged',shopify:'page',magento:'p'};
+// A theme may cut a long title on the card ("…" or "..."): the start of the title, cut, still shows the name.
+const flat=s=>String(s||'').replace(/\s+/g,' ').trim();
+export function showsTitle(text,title){
+ const s=flat(text),t=flat(title);if(!s||!t)return false;if(s===t)return true;
+ const m=/^(.+?)\s*(?:\.{2,}|…)$/.exec(s);return !!m&&m[1].length>=Math.min(12,t.length)&&t.startsWith(m[1]);
+}
 // Engine cart interceptor patterns per platform, pinned so a misdetected platform cannot drop events. Checkout patterns
 // are the order-placement requests (Magento REST payment-information, Woo wc-ajax=checkout / Store API checkout, Shopify
 // checkout submit) — not every request under /checkout/, which in Magento includes mini-cart edits.
@@ -167,7 +175,7 @@ const decode=s=>{try{return decodeURI(s);}catch{return s;}};
 const sameUrl=(a,b,base)=>{try{const x=new URL(a,base),y=new URL(b,base);return x.hostname.replace(/^www\./,'')===y.hostname.replace(/^www\./,'')&&decode(x.pathname).replace(/\/+$/,'')===decode(y.pathname).replace(/\/+$/,'');}catch{return false;}};
 const priceForms=n=>{if(!Number.isFinite(n))return [];const f=n.toFixed(2);return [...new Set([f,f.replace(/\.00$/,''),String(n),Number(n).toLocaleString('en-US',{minimumFractionDigits:2}),Number(n).toLocaleString('en-US')])].sort((a,b)=>b.length-a.length);};
 // The card's own add-to-cart control is kept and handed to the engine (data-semantix-atc); other store actions go.
-const ATC_BUTTON='button.tocart,.action.tocart,a.add_to_cart_button,button.add_to_cart_button,button[name="add"],button.single_add_to_cart_button,[data-role="tocart-form"] button[type="submit"],form[action*="cart/add"] button[type="submit"],form[action*="/cart"] button[type="submit"]';
+const ATC_BUTTON='button.tocart,.action.tocart,a.add_to_cart_button,button.add_to_cart_button,button[name="add"],button.single_add_to_cart_button,[data-role="tocart-form"] button[type="submit"],form[action*="cart/add"] button[type="submit"],form[action*="/cart"] button[type="submit"],a[class*="add-cart"],button[class*="add-cart"],a[class*="addtocart"],button[class*="addtocart"]';
 const ATC_TEXT=/הוספה לסל|הוסף לסל|הוספה לעגלה|הוסף לעגלה|לסל הקניות|add to (?:cart|bag|basket)/i;
 // Mirrors the engine's ATC_FORMS / ATC_OPTIONS so detection checks exactly what the engine will replay.
 const ATC_FORMS={magento:"#product_addtocart_form, form[data-role='tocart-form'], form[action*='checkout/cart/add']",woocommerce:"form.cart, form[action*='add-to-cart']",custom:"form[action*='cart/add'], form[action*='add-to-cart'], form[action*='/cart']"};
@@ -176,7 +184,10 @@ const ATC_OPTIONS="select[name^='super_attribute'], [name^='options['][required]
 // to carry the same one; the engine has no token for them, so they are dropped rather than shown on every result.
 const LABELS='[class*="badge"],[class*="label-list"],[class*="product-label"],[class*="product-badge"],[class*="ribbon"],.label,.onsale,.sale-flash,[class*="sale-badge"],[class*="new-badge"]';
 const REMOVE=['script','noscript','style','template','input[name="form_key"]','[data-role="tocart-form"] button','button[type="submit"]','.tocart','.action.tocart','.add_to_cart_button','[name="add"]','.towishlist','.tocompare','.mylist_action','.wishlist','.compare','.quickview','[class*="quick-view"]','[class*="quickview"]','.product-item-actions','.actions-secondary'];
-const DROP_ATTRS=/^(srcset|data-srcset|sizes|data-sizes|data-mage-init|data-bind|onclick|onload|onerror|onmouseover|x-data|x-init|data-gtm.*|data-ga.*|data-track.*|data-unique-selector-key)$/i;
+const DROP_ATTRS=/^(srcset|data-srcset|sizes|data-sizes|data-mage-init|data-bind|onclick|onload|onerror|onmouseover|x-data|x-init|data-gtm.*|data-ga.*|data-track.*|data-unique-selector-key|data-page|data-pageno|data-paged)$/i;
+// Theme infinite-scroll hooks: the matat theme loads its own next page whenever the last `.latest_post` comes into view,
+// so on our cards it appended native products under every Semantix result list.
+const PAGER_CLASS=/^(latest_post|last_post|infinite[-_]?scroll[-\w]*|ias[-_]item|jscroll[-\w]*)$/i;
 
 function textNodes(el,out=[]){for(const c of el.children||[]){if(c.type==='text'&&c.data.trim())out.push(c);else if(c.type==='tag')textNodes(c,out);}return out;}
 const pathOf=(node,root)=>{const p=[];for(let n=node;n&&n!==root;n=n.parent){const sib=(n.parent?.children||[]).filter(c=>c.type===n.type&&(c.type!=='tag'||c.tagName===n.tagName));p.unshift((n.type==='tag'?n.tagName:'#t')+sib.indexOf(n));}return p.join('/');};
@@ -233,6 +244,7 @@ export function buildCardTemplate($,cards,base){
    if(['href','data-href','data-url'].includes(k)&&sameUrl(v,p.url,base)){el.attribs[k]='{{url}}';continue;}
    if(title&&v.includes(title))el.attribs[k]=v.split(title).join('{{name}}');
   }
+   if(el.attribs?.class){const c=el.attribs.class.split(/\s+/).filter(x=>x&&!PAGER_CLASS.test(x)).join(' ');if(c)el.attribs.class=c;else delete el.attribs.class;}
  }
  const imgs=$c('img').toArray(),main=imgs.find(i=>$c(i).closest('a[href="{{url}}"]').length)||imgs[0];
  if(main){main.attribs.src='{{image}}';main.attribs.alt='{{name}}';for(const k of ['data-src','data-original','data-lazy-src'])if(main.attribs[k])main.attribs[k]='{{image}}';}
@@ -247,7 +259,7 @@ export function buildCardTemplate($,cards,base){
  for(const t of nodes){
   if(t===fallback&&!priced){const m=/\d[\d,.]*/.exec(t.data);if(m){t.data=t.data.replace(m[0],'{{price}}');priced=true;decimals=/[.,]\d{2}$/.test(m[0])?2:0;continue;}}
   const s=t.data.trim(),path=pathOf(t,root);
-  if(title&&s===title){t.data=t.data.replace(title,'{{name}}');named=true;continue;}
+  if(title&&showsTitle(s,title)){t.data=t.data.replace(s,'{{name}}');named=true;continue;}
   if(author&&s===author){t.data=t.data.replace(author,'{{author}}');continue;}
   // The price before a discount: shown only for discounted products (data-semantix-if), so its element goes with it.
   if(!regulared&&/\d/.test(s)&&COMPARE.test(priceClass(t)||'')){
@@ -271,7 +283,7 @@ export function buildCardTemplate($,cards,base){
    if(k==='style'&&el!==root&&!['img','input','br','hr','source','video','iframe','picture','a','button'].includes(el.tagName))unstyled.push(el);}
  }
  // Empty wrappers left by removed badges are dropped so they do not keep their spacing.
- const prune=()=>{let changed=true;while(changed){changed=false;$c(root).find('span,div,p,em,strong,b,i,small').each((_,el)=>{if(!$c(el).children().length&&!$c(el).text().trim()&&!/\{\{/.test($c.html(el))){$c(el).remove();changed=true;}});}};
+ const prune=()=>{let changed=true;while(changed){changed=false;$c(root).find('span,div,p,em,strong,b,i,small').each((_,el)=>{if(atc&&$c(el).closest('[data-semantix-atc]').length)return;if(!$c(el).children().length&&!$c(el).text().trim()&&!/\{\{/.test($c.html(el))){$c(el).remove();changed=true;}});}};
  const bare=el=>!$c(el).children().length&&!$c(el).text().trim();
  for(const el of unstyled){if(!bare(el))continue;let up=el.parent;$c(el).remove();while(up&&up!==root&&up.type==='tag'&&bare(up)){const next=up.parent;$c(up).remove();up=next;}}
  prune();
@@ -292,8 +304,8 @@ export function searchForm($,base,platform){
  if(form.length&&input.attr('name')){const action=new URL(form.attr('action')||'/',base);const extra={};form.find('input[type="hidden"][name]').each((_,h)=>{const n=$(h).attr('name');if(n!=='form_key')extra[n]=$(h).attr('value')||'';});return {path:action.pathname,param:input.attr('name'),extra,from:'form',inputSelector:uniqueSelector($,input[0],{chrome:true})};}
  const known=PLATFORM_SEARCH[platform];return known?{...known,extra:known.extra||{},from:'platform'}:null;
 }
-export function searchUrl(origin,search,query,page=1){
- const u=new URL(search.path,origin);for(const [k,v] of Object.entries(search.extra||{}))u.searchParams.set(k,v);u.searchParams.set(search.param,query);if(page>1)u.searchParams.set('p',String(page));return u.href;
+export function searchUrl(origin,search,query,page=1,pageParam='p'){
+ const u=new URL(search.path,origin);for(const [k,v] of Object.entries(search.extra||{}))u.searchParams.set(k,v);u.searchParams.set(search.param,query);if(page>1)u.searchParams.set(pageParam,String(page));return u.href;
 }
 // Queries likely to return a full native results page: the most frequent meaningful title words and pairs.
 export function sampleQueries(products,n=6){
@@ -338,7 +350,7 @@ export async function detectTakeover({url,products,fetchPage,onEvent=async()=>{}
  await step('noResults',!!noResults,noResults?`${noResults.selector} — "${noResults.text}"`:'לא נמצאה הודעת "אין תוצאות"');
  if($z&&$z(gridSel).find(cardSel).length)report.warnings.push('דף ללא תוצאות מציג כרטיסים בגריד — ייתכן שהאתר מציג המלצות במקום הודעה');
 
- const page2=await fetchPage(searchUrl(origin,search,query,2));
+ const page2=await fetchPage(searchUrl(origin,search,query,2,PAGE_PARAM[platform]));
  if(page2?.text){const $2=load(page2.text),n=$2(gridSel).find(cardSel).length;await step('page2',n>0,`${n} כרטיסים בעמוד 2`);}
 
  const hidden=findHidden($r,found.grid);

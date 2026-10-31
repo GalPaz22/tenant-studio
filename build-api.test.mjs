@@ -33,6 +33,13 @@ test('API serves persisted products/context, activates consistent tenant snapsho
   const preview=await request('/search',{query:'1',runId});assert.equal(preview.status,200,JSON.stringify(preview.data));assert.equal(preview.data.matches[0].title,'Original watch');assert.equal(preview.data.metadata.preview,true);
   assert.equal((await request('/activate',{runId})).status,400);
   assert.deepEqual((await store.read(id)).revisions,[]);
+  const partial=await runs.read(runId);await runs.save({...partial,status:'paused',options:{},stages:[{key:'enrich',status:'pending'},{key:'tags',status:'failed'},{key:'index',status:'completed'}]});
+  assert.equal((await request('/build/control',{action:'skip',stage:'index'})).status,400);
+  const skipped=await request('/build/control',{action:'skip',stage:'tags'});assert.equal(skipped.status,200,JSON.stringify(skipped.data));assert.deepEqual(skipped.data.skipStages,['tags']);
+  const paused=await runs.read(runId);assert.deepEqual(paused.options.skipStages,['tags']);assert.equal(paused.stages[1].status,'pending');
+  await runs.save({...paused,status:'running'});assert.equal((await request('/build/control',{action:'skip',stage:'enrich'})).status,200);assert.deepEqual((await runs.control(runId)).skip,['enrich']);
+  await request('/build/control',{action:'pause'});assert.deepEqual(await runs.control(runId),{action:'pause',skip:['enrich']});
+  await runs.save(partial);await runs.control(runId,{action:'run'});
   const foreignId=randomUUID();await runs.save({id:foreignId,projectId:randomUUID(),status:'ready',validation:{passed:true}});assert.equal((await request('/activate',{runId:foreignId})).status,400);
   assert.equal((await request('/search',{query:'1',runId:foreignId})).status,400);
   let calls=0;app.locals.chatAgent=async prompt=>{assert.ok(prompt.includes('Execute the operator prompt'));return calls++===0?{tools:[{name:'products',categories:[],nameContains:'watch'}]}:{operations:[{type:'scoped_alias',selectionId:'selection-1',term:'שעון בדיקה'}],testQueries:['שעון בדיקה'],message:'נוסף כינוי ממוקד'};};

@@ -26,6 +26,13 @@ export function normalizeRecord(raw,platform,origin,sourceUrl,at=new Date().toIS
       categories:strings(raw.categories),tags:strings(raw.tags),description:clean(raw.description||raw.short_description),
       sourceAttributes:raw.attributes||[],variants:raw.variantDetails||(raw.variations||[]).map(v=>typeof v==='object'?{...v,detailStatus:'partial'}:{id:String(v),detailStatus:'not-provided'}),brand:strings(raw.brands)[0]||raw.brand||'',
       specifications:raw.specifications||{}};
+    // The authorized REST API (wc/v3, no `prices` object) also gives the short description, shipping measures and stock count.
+    if(!raw.prices&&raw.regular_price!==undefined){
+      const short=clean(raw.short_description);if(short&&raw.description&&!p.description.includes(short))p.description=short+'\n'+p.description;
+      const specs={...p.specifications},dims=raw.dimensions||{};if(raw.weight)specs['משקל']=String(raw.weight);
+      const size=[dims.length,dims.width,dims.height].filter(Boolean);if(size.length)specs['מידות']=size.join(' × ');p.specifications=specs;
+      if(Number.isInteger(raw.stock_quantity))p.stockQuantity=raw.stock_quantity;if(raw.on_sale===true)p.onSale=true;if(raw.catalog_visibility==='hidden')p.hidden=true;
+    }
   } else if(platform==='shopify') {
     const variants=(raw.variants||[]).map(v=>({id:String(v.id),sku:v.sku||'',title:v.title,price:amount(v.price),regularPrice:amount(v.compare_at_price),stockStatus:typeof v.available==='boolean'?(v.available?'instock':'outofstock'):'unknown',options:[v.option1,v.option2,v.option3].filter(Boolean),gtin:v.barcode||''}));
     const priced=variants.filter(v=>v.stockStatus==='instock'&&v.price!==null).sort((a,b)=>a.price-b.price),selected=priced[0]||variants[0];
@@ -113,11 +120,14 @@ export async function collectCatalog(project,options,state,{fetchSource=fetchPub
   }
   if(mode==='sitemap') {
     state.sitemaps??=[options.sitemapUrl];state.seenSitemaps??=[];
-    while(state.sitemaps.length){await control();const url=state.sitemaps[0];const xml=await fetchSource(url,{maxBytes:64*1024*1024}),$=load(xml,{xmlMode:true});
-      let nested=$('sitemap > loc').toArray().map(n=>$(n).text().trim());
+    while(state.sitemaps.length){await control();const url=state.sitemaps[0];
+      // Some stores serve a different sitemap per backend behind the load balancer; sitemapPasses re-reads it and keeps the union.
+      let nested=[],urls=[];for(let pass=0;pass<(options.sitemapPasses||1);pass++){const xml=await fetchSource(url,{maxBytes:64*1024*1024}),$=load(xml,{xmlMode:true});
+        nested.push(...$('sitemap > loc').toArray().map(n=>$(n).text().trim()));urls.push(...$('url > loc').toArray().map(n=>$(n).text().trim()));}
+      nested=[...new Set(nested)];
       // A product filter (e.g. "product") keeps only product sitemaps when the index has any.
       if(options.sitemapFilter&&nested.some(u=>rx(options.sitemapFilter).test(u)))nested=nested.filter(u=>rx(options.sitemapFilter).test(u));
-      const urls=$('url > loc').toArray().map(n=>$(n).text().trim()).filter(u=>{try{return new URL(u).origin===origin&&(!spec||productKey(u,spec))}catch{return false}});
+      urls=[...new Set(urls)].filter(u=>{try{return new URL(u).origin===origin&&(!spec||productKey(u,spec))}catch{return false}});
       state.urls=[...new Set([...state.urls,...urls])];state.seenSitemaps.push(url);state.sitemaps.shift();
       for(const child of nested)if(new URL(child).origin===origin&&!state.seenSitemaps.includes(child)&&!state.sitemaps.includes(child))state.sitemaps.push(child);
       await checkpoint();await report(`התגלו ${state.urls.length} עמודים במפת האתר`);

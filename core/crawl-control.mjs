@@ -23,15 +23,20 @@ export function crawlStatus(meta,settings,merged=null,{now=Date.now()}={}){
  return {status,running,worker:running?meta.lease.host:null,desired:meta.desired||null,done,total,products,
   errors:(meta.errors||[]).length,recentErrors:(meta.errors||[]).slice(-5),sources:meta.sources||null,startedAt:meta.startedAt||null,updatedAt:meta.updatedAt||null,
   pagesPerMinute:running?Math.round(pace*60):0,etaMinutes:running&&pace>0?Math.round((total-done)/pace/60):null,
-  blockedReason:meta.blockedReason||null,lastMerge:merged,unmerged:Math.max(0,products-(merged?.pages||0)),settings};
+  blockedReason:meta.blockedReason||null,lastMerge:merged,unmerged:Math.min(products,Math.max(0,products-(merged?.pages||0),(meta.productRevision||0)-(merged?.productRevision??merged?.pages??0))),settings};
 }
 // An activated dedicated scraper travels with the job; without one the worker uses the generic JSON-LD extractor.
 // A draft scraper that passed its own validation (name and product key on ≥80% of sample pages) is used too.
 export const scraperReady=s=>!!s?.spec&&(s.status==='active'||s.status==='draft'&&(s.validation?.fill?.name??0)>=0.8&&(s.validation?.fill?.key??0)>=0.8);
 export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null,spec:scraperReady(p.scraper)?p.scraper.spec:null};};
-export async function startCrawl(p,store,{reseed=false}={}){
+export async function startCrawl(p,store,{reseed=false,rescan=false}={}){
  const meta=await store.meta(p.id);
- await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:reseed||!meta?.total});
+ // Repeated starts must not reset a job that is already queued or running.
+ if(meta?.desired==='running')return;
+ // A completed queue has nothing left to resume. A normal start refreshes every page;
+ // an explicit reseed only discovers pages that have not been collected yet.
+ const restart=rescan||!reseed&&(meta?.status==='done'||meta?.total>0&&meta.next>=meta.total);
+ await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:restart||reseed||!meta?.total,rescanRequested:restart});
 }
 export async function stopCrawl(p,store){const meta=await store.meta(p.id);if(meta?.desired!=='running')throw Error('הסורק לא רץ');await store.control(p.id,{desired:'stopped'});}
 

@@ -1,3 +1,4 @@
+import {scrapeFetch} from './egress.mjs';
 import {MongoClient} from 'mongodb';
 import {buildSearchIndex} from './search-index.mjs';
 import {processProduct} from './core.mjs';
@@ -34,18 +35,31 @@ export function parseProductPage(html,url){
   author:list(d.author)||null,publisher:list(d.publisher)||null,type:String(d['@type']||''),isbn:d.isbn||null};
 }
 
-export async function get(url,{fetcher=fetch}={}){
+// Retry-After is either seconds or an HTTP date; anything unreadable means "no hint".
+export function retryAfter(value,now=Date.now()){
+ if(!value)return 0;const s=Number(value);if(Number.isFinite(s))return Math.max(0,s*1000);
+ const t=Date.parse(value);return Number.isFinite(t)?Math.max(0,t-now):0;
+}
+// A refusing host gets exponentially longer pauses (1, 2, 4… up to 30 minutes, or longer if it asks),
+// and only after this many refusals in a row is the crawl declared blocked. An off-site redirect is a deliberate
+// signal and stops sooner.
+export const REFUSAL_PATIENCE=8,OFFSITE_PATIENCE=3,MAX_PACE_MS=20000;
+export const backoffMs=(failures,hintMs=0)=>Math.min(2*3600000,Math.max(hintMs,Math.min(30*60000,60000*2**(failures-1))));
+// Sleeps in short slices so a stop from the studio is honored during a long backoff.
+const pauseUnlessStopped=async(ms,shouldStop)=>{for(const until=Date.now()+ms;Date.now()<until&&!shouldStop();)await sleep(Math.min(15000,until-Date.now()));};
+
+export async function get(url,{fetcher=scrapeFetch}={}){
  const r=await fetcher(url,{redirect:'manual',headers:{'User-Agent':CRAWLER_UA,Accept:'text/html,application/xml;q=0.9,*/*;q=0.8'},signal:AbortSignal.timeout(20000)});
  const location=r.headers.get('location');
- if(r.status>=300&&r.status<400){const next=location&&new URL(location,url);if(!next||next.host!==new URL(url).host){const e=Error('הופנה אל '+(next?.host||'?'));e.blocked=true;throw e;}return get(next.href,{fetcher});}
- if([403,429,503].includes(r.status)){const e=Error('HTTP '+r.status);e.blocked=true;throw e;}
+ if(r.status>=300&&r.status<400){const next=location&&new URL(location,url);if(!next||next.host!==new URL(url).host){const e=Error('הופנה אל '+(next?.host||'?'));e.blocked=true;e.offsite=true;throw e;}return get(next.href,{fetcher});}
+ if([403,429,503].includes(r.status)){const e=Error('HTTP '+r.status);e.blocked=true;e.retryAfterMs=retryAfter(r.headers.get('retry-after'));throw e;}
  if(r.status!==200){const e=Error('HTTP '+r.status);e.status=r.status;throw e;}
  return r.text();
 }
 const locs=xml=>[...String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map(m=>m[1].replace(/&amp;/g,'&'));
 
 // Discovery: clicked products (what shoppers want) first, then product sitemaps, then product URLs already in the catalog.
-export async function seedCrawl(project,{fetcher=fetch,clicks=readClickedUrls,catalogUrls=p=>(p.productCards||[]).map(c=>c.url).filter(Boolean),sources:use={clicks:true,sitemap:true,catalog:true},spec=null}={}){
+export async function seedCrawl(project,{fetcher=scrapeFetch,clicks=readClickedUrls,catalogUrls=p=>(p.productCards||[]).map(c=>c.url).filter(Boolean),sources:use={clicks:true,sitemap:true,catalog:true},spec=null}={}){
  const origin=new URL(project.url).origin,robots=robotsRules(await get(origin+'/robots.txt',{fetcher}).catch(()=>'')),seen=new Map(),sources={clicks:0,sitemap:0,catalog:0};
  // With a dedicated spec the product key and URL come from its productUrl rule; the default keeps numeric-id URLs.
  const add=(url,source)=>{const n=spec?productKey(url,spec):productNumber(url);if(!n||seen.has(n))return;let clean;try{const u=new URL(url,origin);if(u.origin!==origin)return;u.hash='';clean=spec?u.href:origin+'/'+n;}catch{return;}if(!robotsAllows(robots,clean))return;seen.set(n,clean);sources[source]++;};
@@ -65,18 +79,27 @@ export async function readClickedUrls(project){
 }
 
 // Runs (or resumes) the crawl, checkpointing every few pages. Returns the final state.
-export async function runCrawl(state,{store,fetcher=fetch,rateMs=1000,limit=Infinity,onProgress=()=>{},shouldStop=()=>false,spec=null}={}){
- const delay=Math.max(rateMs,(state.robots?.delay||0)*1000);let fetched=0;state.status='running';await store.save(state);
+export async function runCrawl(state,{store,fetcher=scrapeFetch,rateMs=1000,limit=Infinity,onProgress=()=>{},shouldStop=()=>false,spec=null,pause=pauseUnlessStopped}={}){
+ // paceMs is the learned gap between pages: it doubles on every refusal and drifts back toward the base on success,
+ // and it is saved, so a resumed crawl keeps the pace the host tolerated.
+ const base=Math.max(rateMs,(state.robots?.delay||0)*1000);state.paceMs=Math.min(MAX_PACE_MS,Math.max(base,state.paceMs||0));
+ let fetched=0;state.status='running';await store.save(state);
  while(state.next<state.queue.length&&fetched<limit){
   if(shouldStop()){state.status='stopped';break;}
   const url=state.queue[state.next];
-  try{const html=await get(url,{fetcher}),page=spec?extractWithSpec(html,url,spec):parseProductPage(html,url),key=page&&(page.key||page.sku);if(key)state.products[key]={...page,sku:key,crawledAt:new Date().toISOString()};else state.errors[url]='אין נתוני מוצר בדף';state.failures=0;state.next++;}
+  try{const html=await get(url,{fetcher}),page=spec?extractWithSpec(html,url,spec):parseProductPage(html,url),key=page&&(page.key||page.sku);if(key){state.products[key]={...page,sku:key,crawledAt:new Date().toISOString()};delete state.errors[url];}else state.errors[url]='אין נתוני מוצר בדף';state.failures=0;state.next++;
+   state.paceMs=Math.max(base,Math.round(state.paceMs*0.995));}
   catch(e){
-   if(e.blocked){state.failures++;if(state.failures>=3){state.status='blocked';state.blockedReason=e.message;break;}await sleep(60000*state.failures);continue;}
+   if(e.blocked){
+    state.failures++;state.paceMs=Math.min(MAX_PACE_MS,Math.max(1000,base,state.paceMs)*2);
+    if(state.failures>=(e.offsite?OFFSITE_PATIENCE:REFUSAL_PATIENCE)){state.status='blocked';state.blockedReason=e.message;break;}
+    await store.save(state);onProgress(state);
+    await pause(backoffMs(state.failures,e.retryAfterMs),shouldStop);
+    continue;}
    if(Object.keys(state.errors).length<2000)state.errors[url]=e.message;state.next++;
   }
   fetched++;if(fetched%20===0){await store.save(state);onProgress(state);}
-  await sleep(delay);
+  await pause(state.paceMs,shouldStop);
  }
  if(state.status==='running')state.status=state.next>=state.queue.length?'done':'paused';
  await store.save(state);onProgress(state);return state;
@@ -108,7 +131,7 @@ export function mergeCrawl(p,state,spec=null){
   }
  }
  p.productCards=cards;p.searchIndex=buildSearchIndex(cards,'crawl-'+Date.now());delete p.vectorIndex;p.productCardsProfileHash=hash(profile);p.mongoPolicyDirty=true;
- p.siteCrawl={mergedAt:new Date().toISOString(),pages:Object.keys(state.products||{}).length,...counts};
+ p.siteCrawl={mergedAt:new Date().toISOString(),pages:Object.keys(state.products||{}).length,productRevision:state.productRevision||0,...counts};
  return counts;
 }
 

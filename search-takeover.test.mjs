@@ -4,7 +4,7 @@ import {mkdtemp,readdir,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {load} from 'cheerio';
-import {detectTakeover,mergeSiteConfig,fillTemplate,buildCardTemplate,findGrid,findRoot,findAutocomplete,shellOf,uniqueSelector,sampleQueries,ZERO_QUERY,applySettings,cleanTemplate} from './core/search-takeover.mjs';
+import {detectTakeover,mergeSiteConfig,fillTemplate,buildCardTemplate,findGrid,findRoot,findAutocomplete,shellOf,uniqueSelector,sampleQueries,ZERO_QUERY,applySettings,cleanTemplate,showsTitle} from './core/search-takeover.mjs';
 import {buildShopifyTakeover} from './core/takeover-export.mjs';
 import {publishSiteConfig,rollbackSiteConfig,readSiteConfig,configHash} from './core/takeover-control.mjs';
 import {engineTag,enginePage,engineSuggestions,previewConfig,recordEvent,readEvents,clearEvents} from './core/takeover-preview.mjs';
@@ -225,4 +225,32 @@ test('operator settings layer over detection and survive a new detection',async(
  assert.throws(()=>applySettings(t,{overrides:{resultsGrid:'ul[[['}}),/סלקטור/);
  assert.throws(()=>applySettings(t,{loader:{color:'red'}}),/צבע/);
  assert.throws(()=>cleanTemplate('<li>{{name}}</li>'),/\{\{url\}\}/);
+});
+
+test('a card that cuts the title with an ellipsis still yields the name token',()=>{
+ const item=p=>`<div class="product-col"><div class="product-item"><a href="${p.url}"><img src="${p.image}" alt="${p.title}"></a><h2 class="product-name"><a href="${p.url}">${p.title.slice(0,14)}...</a></h2><div class="product-price"><bdi><span>₪</span>${p.price.toFixed(2)}</bdi></div></div></div>`;
+ const list=products.slice(0,4),$=load(`<main><div class="products-row">${list.map(item).join('')}</div></main>`);
+ const tpl=buildCardTemplate($,$('div.product-col').toArray().map((el,i)=>({el,product:list[i]})),origin);
+ assert.ok(tpl.checks.name,'name recognised');
+ assert.match(tpl.html,/<h2 class="product-name"><a href="\{\{url\}\}">\{\{name\}\}<\/a><\/h2>/);
+ assert.ok(load(fillTemplate(tpl.html,list[2]),null,false).root().text().includes(list[2].title));
+ assert.ok(showsTitle('כיסוי לאייפון 16e …','כיסוי לאייפון 16e / 17e שקוף'));
+ assert.ok(!showsTitle('כיסוי...','כיסוי לאייפון 16e / 17e שקוף'),'a cut too short to tell products apart is not the name');
+});
+
+test('theme infinite-scroll hooks (.latest_post, data-pageno) are left off the card template',()=>{
+ const item=p=>`<div class="product-col latest_post" data-pageno="1"><div class="product-item"><a href="${p.url}"><img src="${p.image}" alt="${p.title}"></a><h2 class="product-name"><a href="${p.url}">${p.title}</a></h2><div class="product-price"><bdi>${p.price.toFixed(2)}</bdi></div></div></div>`;
+ const list=products.slice(0,4),$=load(`<main><div class="products-row">${list.map(item).join('')}</div></main>`);
+ const tpl=buildCardTemplate($,$('div.product-col').toArray().map((el,i)=>({el,product:list[i]})),origin);
+ assert.match(tpl.html,/^<div class="product-col">/);
+ assert.ok(!/latest_post|pageno/.test(tpl.html));
+});
+
+test('a theme add-to-cart link (btn-add-cart with a nonce) becomes the Semantix button and keeps its icon',()=>{
+ const item=p=>`<div class="product-col"><div class="product-img"><a href="#" class="btn-add-cart archive_loop" data-security="fd44a130bd" data-id="${p.id}"><i class="icon-cart"></i></a><a href="${p.url}"><img src="${p.image}" alt="${p.title}"></a></div><h2 class="product-name"><a href="${p.url}">${p.title}</a></h2><div class="product-price"><bdi>${p.price.toFixed(2)}</bdi></div></div>`;
+ const list=products.slice(0,4),$=load(`<main><div class="products-row">${list.map(item).join('')}</div></main>`);
+ const tpl=buildCardTemplate($,$('div.product-col').toArray().map((el,i)=>({el,product:list[i]})),origin);
+ assert.ok(tpl.addToCart);
+ assert.match(tpl.html,/<a class="btn-add-cart archive_loop" data-semantix-atc="1" href="\{\{url\}\}"[^>]*><i class="icon-cart"><\/i><\/a>/);
+ assert.ok(!tpl.html.includes('fd44a130bd'),'the page nonce does not leak');
 });

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {storesFromIndex,platformHint,englishLayout,typo,prefixed,titleMatches,parseResults,parseSuggest,searchForm,searchPlan,planQueries,judge,scoreSearch,extractContacts,contactPages,auditStore,searchProviders} from './core/prospect.mjs';
+import {parseTranco,storeSignals,storesFromIndex,platformHint,englishLayout,typo,prefixed,titleMatches,parseResults,parseSuggest,searchForm,searchPlan,planQueries,judge,scoreSearch,extractContacts,contactPages,auditStore,searchProviders} from './core/prospect.mjs';
 
 // A fake store: pages by path+query; anything else is a 404.
 const site=pages=>async url=>{const u=new URL(url),key=decodeURIComponent(u.pathname+u.search);const v=pages[key];if(v===undefined)return {status:404,url,text:''};return typeof v==='object'?{status:200,url:v.url||url,text:v.text}:{status:200,url,text:v};};
@@ -23,6 +23,8 @@ test('result pages: products are counted by their links, menus ignored; an expli
  const r=parseResults(results('שמלה',[card('red-dress','שמלה אדומה'),card('blue-dress','שמלה כחולה')]),'שמלה','https://shop.co.il/?s=שמלה');
  assert.deepEqual(r,{measurable:true,count:2,titles:['שמלה אדומה','שמלה כחולה'],emptyMessage:false});
  assert.equal(parseResults(none('zqxjv'),'zqxjv','https://shop.co.il/?s=zqxjv').count,0);
+ const swatches=results('אייפון',[`<li class="product-item"><div class="swatch-attribute"><a href="/product/iphone-15/?color=black">Black</a></div><a href="/product/iphone-15/" class="product-item-link">iPhone 15 Pro</a></li>`]);
+ assert.deepEqual(parseResults(swatches,'אייפון','https://shop.co.il/?s=אייפון').titles,['iPhone 15 Pro']);
  assert.equal(parseResults(none('zqxjv'),'zqxjv','https://shop.co.il/?s=zqxjv').measurable,true);
  assert.equal(parseResults('<html><body>חיפשת zqxjv , תוצאות: 0</body></html>','zqxjv','https://k.co.il/search/?q=zqxjv').measurable,true,'Konimbo wording');
  assert.equal(parseResults('<html><title>x</title><body><h1>שמלה</h1><div id="app"></div></body></html>','שמלה','https://shop.co.il/?s=שמלה').measurable,false);
@@ -84,4 +86,12 @@ test('pages that cannot be read honestly are not scored: same list for every que
  assert.equal(ignores.status,'unmeasurable');assert.equal(ignores.lead,undefined);
  const moved=await auditStore('old.co.il',{get:async url=>new URL(url).hostname==='old.co.il'?{status:301,url:'https://new.co.il/',text:'',offsite:true}:{status:503,url,text:'',blocked:true},delayMs:0});
  assert.deepEqual([moved.host,moved.movedFrom,moved.status],['new.co.il','old.co.il','unreachable']);
+});
+
+test('Tranco: Israeli domains by traffic rank; a home page is a store when it has a commerce platform or prices with a cart',()=>{
+ assert.deepEqual(parseTranco('1,google.com\r\n90,www.shop.co.il\r\n12,ynet.co.il\r\n5,technion.ac.il\r\nbad\r\n'),[{host:'ynet.co.il',rank:12},{host:'shop.co.il',rank:90}]);
+ assert.equal(storeSignals('<script src="https://cdn.shopify.com/s.js"></script>').platform,'shopify');
+ assert.equal(storeSignals('<link href="/wp-content/plugins/woocommerce/a.css"><body>מחקר</body>').store,false,'WooCommerce on a site with nothing for sale');
+ assert.equal(storeSignals('<body>₪120 ₪90 ₪45 <a href="/cart">סל</a></body>').store,true);
+ assert.equal(storeSignals('<body>כתבה על מחירי הדירות: ₪2,000,000 ₪1,500,000 ₪900,000</body>').store,false,'prices alone are news, not a shop');
 });

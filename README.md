@@ -61,6 +61,8 @@ The local `.env` supplies `GEMINI_API_KEY`/`GOOGLE_API_KEY`, optional `STUDIO_CH
 }
 ```
 
+WooCommerce REST keys can also be entered per tenant in the studio (advanced UI → “חיבור WooCommerce API”: store URL, consumer key, consumer secret). The URL must be the tenant's own host (`www.` aside); the keys are checked against `/wp-json/wc/v3/products` before they are saved, kept server-side only (`data/store-credentials.json`, mode 0600, or the shared `store_credentials` Mongo collection when the Shopify installs use Mongo) and never sent back to the browser. “משוך קטלוג מה־API” starts a build with the authorized source: full paging, variations, attributes, short description, weight/dimensions, stock quantity and the store currency. An entry in `STUDIO_CONNECTORS` takes precedence.
+
 Credentials cannot redirect to another origin. All fetches validate/pin public DNS and reject internal networks. Responses default to 3 MB, feeds to 64 MB, with 15-second source timeouts. Remote content is information, never executable instructions. ZIP assets are compressed and bounded (256 MB per file / 512 MB total uncompressed).
 
 This remains a local developer workbench with Host/Origin/session protection. It is not a multi-host worker system or an internet-facing authenticated admin service. Live tests of authenticated platform access, Atlas and optional embedding providers require their configured credentials; automated tests use injected providers to verify behavior without writing to external stores.
@@ -152,6 +154,7 @@ The studio's goal for an existing client is to replace its current search: keep 
 - **Fixes from real queries**: "תקן אבודים" (`POST /audit {fix:true, source:"baseline"}`) sends the most-searched lost queries to the agent with the products shoppers chose; a fix is kept only when it passes the reviewer and those products come back.
 - **Processing lab** ("עיבוד"): `STUDIO_PLANNER_MODEL` (default `gemini-3.1-pro-preview`) researches the tenant with a playbook of standard e-commerce search processing (field completion, cross-language bridging, spelling normalization, taxonomy and attributes, evidence-based tagging, doc2query expansion, dense embeddings, identifiers, offline measurement) and proposes up to six plans, each citing the queries it should fix: `import_db_field`, `derive_field` (translation / transliteration / normalization over distinct values), `extract_pattern`, `enrich_products` (per-product grounded field, e.g. shopper keywords), `classify_tag` (evidence-quoted classification; the label becomes a searchable tag), `embeddings` (256-d `gemini-embedding-2` vectors stored compactly as `studioVectors` and used by the semantic candidate stage), or an `idea` that needs implementation (shown, not run). Plans are tried on a sample with a cost estimate, run with `STUDIO_PROCESSING_MODEL` (default `gemini-3.8-flash`), measured against the baseline (embeddings: sampled full-search check) and rolled back automatically if they lose a kept query; every run can be undone.
 - **Dedicated scraper** ("סורק" → "סורק ייעודי ללקוח"): the planner writes a declarative product-page spec (product URL rule with key, JSON-LD paths or CSS selectors per field) from sample pages; it is validated on more pages and against the catalog, refined once if weak, and used by the tenant's crawl after the operator activates it.
+- **Repeat site crawls**: starting a completed crawl rebuilds the queue and refreshes every discovered page, including prices and stock on existing products. A stopped crawl resumes its checkpoint; “סרוק מחדש מההתחלה” (`POST /crawl/start {rescan:true}`) explicitly starts a full pass. “רענן רשימת דפים” (`{reseed:true}`) discovers only uncollected products. Previous observations stay available during scanning. Refreshed observations count as pending merges even when the number of products is unchanged, including for automatic merging.
 - Models: the studio agent defaults to `gemini-3.8-flash` (`STUDIO_AGENT_MODEL`); the reviewer (`STUDIO_JUDGE_MODEL`) and planner default to Pro.
 
 ### New client from a URL
@@ -171,7 +174,7 @@ The studio's goal for an existing client is to replace its current search: keep 
 
 ### Storefront plugin packages
 
-“גרסאות וכללים” → “יצירת פלאגין לאתר” generates a platform-specific ZIP (`POST /api/projects/:id/storefront-plugin`) from the selected platform, HTTPS search endpoint, CDN base URL and optional **public search-only** storefront key. WooCommerce gets a WordPress plugin folder, Shopify a theme app embed to integrate into an existing Shopify app, Magento 2 a module with layout/CSP configuration, and Custom an embed snippet. The common integration captures the store's existing search forms, replaces the product grid with Semantix results, and clones an existing theme product card so the result markup retains the store's CSS classes. It falls back to a minimal card when no theme card can be discovered. It does not sync inventory.
+“תוסף” → “יצירת תוסף חדש” generates a platform-specific ZIP (`POST /api/projects/:id/storefront-plugin`) from the selected platform, HTTPS search endpoint, CDN base URL and optional **public search-only** storefront key. WooCommerce gets a WordPress plugin folder, Shopify a theme app embed to integrate into an existing Shopify app, Magento 2 a module with layout/CSP configuration, and Custom an embed snippet. The common integration captures the store's existing search forms, replaces the product grid with Semantix results, and clones an existing theme product card so the result markup retains the store's CSS classes. It falls back to a minimal card when no theme card can be discovered. It does not sync inventory.
 
 The package includes content-hashed JavaScript, a Cloudflare Workers Static Assets configuration, and installation/rollback instructions. Other static hosts can serve the same assets. Deploy the search backend separately and configure tenant authentication, CORS and rate limits there. All CDN code/configuration is public; never enter Studio/admin/provider secrets. Generation neither publishes assets nor installs the package into a store. Shopify still requires app deployment and merchant app-embed activation. Browser/API tests run with `node --test storefront-plugin.test.mjs storefront-plugin-api.test.mjs`.
 
@@ -187,6 +190,65 @@ For “תקן את השאילתות הכי פחות ממירות”, the agent f
 
 The client profile (`core/client-brain.mjs`) resolves platform identity from the connected dashboard user and project/onboarding evidence. A specific dashboard platform replaces legacy imported `custom` placeholders; contradictory specific platforms remain unresolved. Plugin generation reads this profile server-side and ignores a browser-supplied platform. The Studio displays the resolved platform rather than a manual selector. Successful refresh keeps the project's platform aligned for existing consumers.
 
-“בקרת חיפוש” runs `POST /api/projects/:id/performance/review` for a 7/30/90-day window using the configured Pro planner with reasoning (`plannerModel()`). It collects fresh tenant analytics, catalog and configuration evidence, baseline summaries, and up to six actual local draft searches. Reports retain the model, timestamp, revision, data limitations, sample timings, and up to six proposed actions spanning ranking/pinning, processing, indexes, functions, pipeline, catalog and tracking. Timing is a small local sample, not production telemetry. Reports and the last four previous reports persist on the project; the agent can read or refresh them with `search_performance`. Processing research also consumes the report.
+“בקרת חיפוש” runs `POST /api/projects/:id/performance/review` for a 7/30/90-day window using `gemini-3.8-flash` with reasoning (`reportModel()`; `STUDIO_REPORT_MODEL` overrides it, e.g. `gemini-3.1-pro-preview`). It collects fresh tenant analytics, catalog and configuration evidence, baseline summaries, and up to six actual local draft searches. Reports retain the model, timestamp, revision, data limitations, sample timings, and up to six proposed actions spanning ranking/pinning, processing, indexes, functions, pipeline, catalog and tracking. Timing is a small local sample, not production telemetry. Reports and the last four previous reports persist on the project; the agent can read or refresh them with `search_performance`. Processing research also consumes the report.
 
 Each proposal includes evidence, affected queries, hypothesized impact, risk, success metric and validation/rollback instructions. “העבר לאייג׳נט לבדיקה וביצוע” prepares an explicit chat request; it does not execute model-generated code or publish changes. Changed catalog/profile fingerprints block stale proposals. Unsupported ideas (including a new index architecture or native pinning) are implementation work, not falsely marked as completed. This is on-demand monitoring; no background schedule or automatic production tuning is enabled.
+
+### Concierge opening policy and model
+
+Studio → Concierge offers an opening-policy prompt, a separate shopper model,
+enable/auto-open controls, and “Send to agent for refinement and testing”. The
+agent's `configure_concierge` accepts `triggerPrompt` and `model`; omitted values
+preserve existing settings. `preview_concierge` uses the same classifier as live
+Studio search and reports the decision explanation. The picker lists only the
+Gemini models supported by Studio's adapter; null uses `STUDIO_CHAT_MODEL`.
+
+An empty opening prompt preserves the original three deterministic trigger
+moments without an extra model call. A custom prompt classifies each search,
+including searches with literal results; failures leave chat closed and report
+an error. The selected model serves both opening decisions and shopper turns,
+independently of the Studio engineer model. Settings are saved per project, not
+as a search-rule revision. These settings currently affect **Studio previews**;
+they do not update dashboard-server's concierge or deploy the WooCommerce plugin.
+
+Studio search classifies the query **before** results return (`POST /concierge/classify`,
+query text only, one short model call in parallel with the search). A
+concierge-type query opens the chat at once and sends the query as the first
+shopper message through `POST /concierge/stream` (NDJSON: `thinking`, `step`,
+`products`, then `done` or `error`). The search request then carries
+`conciergeClassified:true`: literal results return with no model call. The
+three deterministic moments (empty, out of stock, non-literal) still apply
+after results; with a merchant policy, the policy is asked again only at such a
+moment, since the pre-search classifier cannot see results or stock. `preview_concierge` and
+searches without the flag keep the post-search evaluation.
+
+Every shopper turn (answered or failed) is saved to
+`data/concierge-logs/<projectId>.jsonl`, one line per turn: conversation id,
+time, trigger, message, reply, presented products and tool steps. The client
+sends `conversationId` (a UUID per opened chat; the server makes one when
+absent and returns it). `GET /concierge/conversations` returns the latest 50
+conversations, shown under “שיחות שמורות” in the Concierge tab. The log moves to
+trash with the project.
+
+Validation: `node --test concierge.test.mjs concierge-api.test.mjs studio-agent.test.mjs`.
+
+### Scraper exit (proxy / VPN)
+
+`STUDIO_SCRAPE_PROXY` routes every site fetch — catalog build and discovery
+(`fetchPublic`), the site crawler and its cloud worker, the demo mirror and
+prospect page fetches (`fetchOrigin`) — through one proxy. Accepted:
+`http://`, `https://` or `socks5://`, with optional `user:pass@`. Unset, requests
+go out directly. With it set there is no direct fallback: a proxy that is down
+or rejects the login fails the request. Model, MongoDB, Shopify Admin and CDN
+calls are not proxied. The setting is read per request; set it for the web
+service and for the crawl worker. Validation: `node --test egress.test.mjs`.
+
+### Autocomplete follows the module
+
+`runtime.suggest(query,{limit})` answers suggestions from the index with the tenant's rules (rewriteQuery function,
+spelling and linked terms, tag / type / price filters, hidden products, stock policy) and no model call; an
+unfinished last word is completed from the catalog's own words. Exported modules serve it as
+`createTenantRoutes().autocomplete` (registry v5: `semantixTenants.autocomplete`), which dashboard-server mounts first
+on `GET /autocomplete`; a query the module has nothing for, a switched-off module or a failure falls through to the
+existing autocomplete. The studio's engine preview and the demo harnesses use the same function.
+Validation: `node --test mini-server.test.mjs`.

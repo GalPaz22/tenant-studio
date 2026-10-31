@@ -34,3 +34,10 @@ test('quotation marks collapse to the same word and title matches rank first',()
  assert.deepEqual(ids(find('תנ׳׳ך')),['1','2','0']);
  assert.equal(find('תנך').plan.terms.join(' '),'תנך');
 });
+test('a trademark sign glued to a name is dropped, not spelled "TM" (Enduro™ 4)',async()=>{
+ const {normalize}=await import('./core/core.mjs');
+ assert.equal(normalize('Enduro™ 4'),'enduro 4');assert.equal(normalize('fēnix® 8'),'fenix 8');assert.equal(normalize('Shield℠'),'shield');
+ const p=existingProject('garmin',{dbName:'garmin'},[{id:'3',name:'שעון ספורט Enduro™ 3',stockStatus:'instock'},{id:'4',name:'Enduro™ 4 | 51mm Titanium',description:'/* css */',stockStatus:'instock'}]);
+ const find=q=>createIndexRetriever(p.productCards,{...p.revisions[0].profile,tenantId:p.id},p.searchIndex)(q);
+ assert.deepEqual(ids(find('enduro')).sort(),['3','4']);assert.deepEqual(ids(find('enduro 4')),['4']);
+});

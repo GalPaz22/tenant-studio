@@ -11,7 +11,7 @@ test('targeted tools select category AND title, then fix retrieval without chang
  });
  assert.deepEqual(result.profile.scopedAliases[0].productIds,['1']);assert.equal(result.checks[0].before.total,0);assert.equal(result.checks[0].after.total,1);assert.equal(JSON.stringify(p),original);
  const rt=createDraftRuntime({...p,productCardsProfileHash:hash(result.profile)},{number:2,profile:result.profile});assert.equal((await rt.search({query:'מאג'})).matches[0].id,'1');
- const checked=createSearchService(rt.products,rt.profile,async()=>{throw Error('offline')},{lightweightRouter:false});const empty=await checked({query:'מאג זכוכית'});assert.ok(empty.total>0);assert.ok(empty.matches.every(p=>p.matchQuality==='alternative'));assert.equal(empty.metadata.llmCalls,2);
+ const checked=createSearchService(rt.products,rt.profile,async()=>{throw Error('offline')},{lightweightRouter:false});const empty=await checked({query:'מאג זכוכית'});assert.ok(empty.total>0);assert.ok(empty.matches.every(p=>p.matchQuality==='alternative'));assert.equal(empty.metadata.llmCalls,3,'interpret, its one retry, alternatives');
 });
 test('unknown selections and forbidden full-catalog operations cannot mutate a profile',async()=>{
  const p=fixture();await assert.rejects(()=>focusedRepair(p,'test',null,async()=>({message:'x',operations:[{type:'scoped_alias',selectionId:'invented',term:'מאג'}]})));

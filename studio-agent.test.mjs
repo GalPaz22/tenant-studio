@@ -1,7 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {mkdtemp} from 'node:fs/promises';import {tmpdir} from 'node:os';import {createServer} from 'node:net';
-import {studioAgent,tools} from './core/studio-agent.mjs';import {existingProject} from './existing-client.mjs';import {createStore} from './store.mjs';
-import {createIndexRetriever} from './core/search-index.mjs';
+import {studioAgent,tools,createStudioSearch} from './core/studio-agent.mjs';import {existingProject} from './existing-client.mjs';import {createStore} from './store.mjs';
+import {createIndexRetriever,buildSearchIndex} from './core/search-index.mjs';
 
 const books=()=>existingProject('books',{dbName:'books'},[{id:'1',name:'אבא עושה בושות',author:'מאיר שלו',stockStatus:'instock'},{id:'2',name:'יונה ונער',author:'מאיר שלו',stockStatus:'instock'},{id:'3',name:'ספר אחר',author:'עמוס עוז',stockStatus:'instock'}]);
 const lexical=(p,profile)=>query=>{const r=createIndexRetriever(p.productCards,{...profile,tenantId:p.id},p.searchIndex)(query);return {...r,metadata:{phase:'lexical',llmUsed:false}};};
@@ -53,6 +53,14 @@ test('read-only questions and failed tools do not create versions or fake change
  const done=events.filter(e=>e.type==='tool_done');assert.deepEqual(done.map(e=>e.ok),[true,false,false]);assert.match(done[2].text,/כלי לא קיים/);
 });
 
+test('numeric titles and descriptions saved by older imports do not crash the agent',async()=>{
+ // Projects imported before text coercion still hold numbers (a book titled 1984); their index hash is tied to them.
+ const p=books();p.productCards[0].title=1984;p.productCards[0].description=458;p.searchIndex=buildSearchIndex(p.productCards,'legacy');
+ const next=await studioAgent(p,'ספר פנטזיה לנער',{model:scripted({tools:[{name:'get_product',id:p.productCards[0].id},{name:'search',query:'1984'}]},{message:'נבדק'}),onEvent:async()=>{},services:{createSearch:lexical}});
+ assert.equal(next.messages.at(-1).text,'נבדק');
+ const imported=existingProject('n',{dbName:'n'},[{id:'9',name:1984,description:458,stockStatus:'instock'}]);
+ assert.equal(imported.productCards[0].title,'1984');assert.equal(imported.productCards[0].description,'458');
+});
 test('changes that break a confirmed example are sent back once, then refused without saving',async()=>{
  const p=books();p.learning={examples:[{id:'e1',query:'שלו',includeIds:['1','2'],excludeIds:[],status:'confirmed'}],proposals:[]};
  const fixing=scripted({tools:[{name:'add_spelling',from:'שלו',to:'עוז'}]},{message:'בוצע'},{tools:[{name:'remove_rule',kind:'spelling',key:'שלו'}]},{message:'הוסר, הבדיקות עוברות'});
@@ -213,4 +221,15 @@ test('customer conversion questions call fresh tenant analytics without changing
  const model=async prompt=>{assert.ok(prompt.includes('customer_analytics'));return calls++===0?{tools:[{name:'customer_analytics',days:7,sort:'purchases'}]}:{message:'אין בטווח נתוני רכישה מאומתים; אי אפשר להסיק שאין מכירות.'};};
  const next=await studioAgent(p,'כמה רכישות היו השבוע?',{model,services:{createSearch:lexical,customerAnalytics:async(project,args)=>{reads++;assert.equal(project.id,p.id);assert.equal(args.days,7);return report;},dashboardUser:async()=>null,activity:async()=>({error:'unavailable'})}});
  assert.equal(reads,1);assert.equal(next.revisions.length,before);
+});
+
+test('the agent checks autocomplete with the working rules: the stock policy changes what typing suggests',async()=>{
+ const p=existingProject('books',{dbName:'books'},[{id:'1',name:'גבינה צהובה',stockStatus:'instock',price:20},{id:'2',name:'גבינה לבנה',stockStatus:'outofstock',price:10},{id:'3',name:'צנון',stockStatus:'instock',price:5}]);
+ const ctx={p,profile:structuredClone(p.revisions[0].profile),services:{createSearch:createStudioSearch}};
+ const run=()=>createStudioSearch(ctx.p,ctx.profile);ctx.suggest=async(q,l)=>run().suggest(q,l);
+ const typed=await tools.suggest.run(ctx,{query:'גבינה צה'});
+ assert.deepEqual(typed.products.map(x=>x.title),['גבינה צהובה']);assert.deepEqual(typed.completed,['צהובה']);
+ assert.equal((await tools.suggest.run(ctx,{query:'גבינה לב'})).total,0,'an out-of-stock product is not suggested under the default stock policy');
+ ctx.profile.pipeline={...ctx.profile.pipeline,outOfStock:'last'};
+ assert.deepEqual((await tools.suggest.run(ctx,{query:'גבינה לב'})).products.map(x=>x.title),['גבינה לבנה'],'the working stock policy applies to suggestions too');
 });

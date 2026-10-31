@@ -9,6 +9,7 @@ import {createSearchService} from './core/semantic.mjs';
 import {createIndexRetriever} from './core/search-index.mjs';
 import {studioAgent} from './core/studio-agent.mjs';
 import {existingProject} from './existing-client.mjs';
+import * as core from './core/core.mjs';
 import {buildArtifacts} from './artifacts.mjs';
 
 // A grocery like Carmella: fresh produce shares words with sauces, pasta and preserves.
@@ -116,8 +117,8 @@ test('the expansion policy decides whether a short query with literal matches wa
  const make=pipeline=>{const profile={...p.revisions[0].profile,tenantId:p.id,pipeline:{...p.revisions[0].profile.pipeline,...pipeline}};return createSearchService(p.productCards,profile,generate,{retrieve:createIndexRetriever(p.productCards,profile,p.searchIndex),...profile.pipeline});};
  const off=await make({expansion:'off'})({query:'עגבניות',limit:10});assert.equal(calls,0);assert.equal(off.metadata.phase,'lexical');assert.equal(off.metadata.llmUsed,false);assert.ok(off.total>=3);
  await make({expansion:'sparse',expandBelow:2})({query:'עגבניות',limit:10});assert.equal(calls,0,'enough literal matches: no LLM');
- await make({expansion:'sparse',expandBelow:50})({query:'עגבניות',limit:10});assert.equal(calls,1,'too few literal matches: expanded');
- await make({})({query:'תפוחים',limit:10});assert.equal(calls,2,'default keeps the previous behaviour');
+ await make({expansion:'sparse',expandBelow:50})({query:'עגבניות',limit:10});assert.equal(calls,2,'too few literal matches: expanded (a failing provider is retried once)');
+ await make({})({query:'תפוחים',limit:10});assert.equal(calls,4,'default keeps the previous behaviour');
 });
 test('the agent can measure searches, read the engine code and switch the expansion policy',async()=>{
  const {tools}=await import('./core/studio-agent.mjs');
@@ -129,11 +130,40 @@ test('the agent can measure searches, read the engine code and switch the expans
  assert.throws(()=>tools.configure_search.run(ctx,{expansion:'sparse',expandBelow:10}),/לא צוין שינוי/);
 });
 
+test('"last" keeps an exact title on top even when it is out of stock',()=>{
+ const m=[{id:1,title:'הסערה הגדולה',stockStatus:'instock'},{id:2,title:'בשוך הסערה',stockStatus:'instock'},{id:3,title:'הסערה',stockStatus:'outofstock'},{id:4,title:'אחרי הסערה',stockStatus:'outofstock'},{id:5,title:'הסערה',stockStatus:'instock'},{id:6,title:'הסערה / שייקספיר',stockStatus:'outofstock'}];
+ assert.deepEqual(core.stockLast(m,'  הסערה ').map(p=>p.id),[5,3,6,1,2,4]);
+ assert.deepEqual(core.stockLast(m,'סערה').map(p=>p.id),[1,2,5,3,4,6],'no exact title: in-stock first, order kept');
+});
+
+test('retired rows (out of stock with no price or missed by the latest sync, or never stamped by a sync) are imported hidden',()=>{
+ const {retiredRows}=core,day=864e5,now=Date.parse('2026-10-14T08:00:00Z'),seen=d=>new Date(now-d*day).toISOString();
+ const rows=[{id:'live',stockStatus:'outofstock',price:50,lastSeenAt:seen(0)},{id:'recent',stockStatus:'outofstock',price:50,lastSeenAt:seen(2)},{id:'stale',stockStatus:'outofstock',price:50,lastSeenAt:seen(7)},
+  {id:'unseen',stock_status:'outofstock',price:50},{id:'free',stockStatus:'outofstock',price:0,lastSeenAt:seen(0)},{id:'old-in',stockStatus:'instock',price:50,lastSeenAt:seen(30)},{id:'in-noprice',stockStatus:'instock',lastSeenAt:seen(0)},{id:'in-unseen',stockStatus:'instock',price:50},
+  {id:'in-unseen-200',stockStatus:'instock',price:50,pageCheck:{status:200}},{id:'out-unseen-200',stockStatus:'outofstock',price:50,pageCheck:{status:200}},{id:'free-unseen-200',stockStatus:'outofstock',price:0,pageCheck:{status:200}},
+  {id:'in-unseen-403',stockStatus:'instock',price:50,pageCheck:{status:403}},{id:'in-seen-404',stockStatus:'instock',price:50,lastSeenAt:seen(0),pageCheck:{status:404}}];
+ const r=retiredRows(rows);assert.deepEqual(rows.filter(r).map(x=>x.id),['stale','unseen','free','in-unseen','free-unseen-200','in-unseen-403','in-seen-404'],'never stamped stays hidden unless its page answered 200; a 404 page is hidden even when stamped');
+ assert.deepEqual([{stockStatus:'outofstock',price:9},{stockStatus:'outofstock',price:null}].filter(retiredRows([{},{},{lastSeenAt:seen(0)}])).map(x=>x.price),[null],'a catalog without sync stamps retires only rows without a price');
+ const p=existingProject('steimatzky',{dbName:'steimatzky'},rows.map(x=>({...x,name:'ספר '+x.id})));
+ assert.deepEqual(p.productCards.filter(c=>c.hidden).map(c=>c.id.split(':').pop()).sort(),['free','free-unseen-200','in-seen-404','in-unseen','in-unseen-403','stale','unseen']);
+});
+
 test('out-of-stock policy: hidden by default, after all in-stock results with "last", in place with "show"',async()=>{
- const p=existingProject('garmin',{dbName:'garmin'},[{id:'a',name:'שעון fenix 8',stockStatus:'outofstock'},{id:'b',name:'שעון fenix 7',stockStatus:'instock'},{id:'c',name:'שעון fenix 6',stockStatus:'instock',hidden:true}]);
+ const p=existingProject('garmin',{dbName:'garmin'},[{id:'a',name:'שעון fenix 8',stockStatus:'outofstock',price:3000},{id:'b',name:'שעון fenix 7',stockStatus:'instock'},{id:'c',name:'שעון fenix 6',stockStatus:'instock',hidden:true},{id:'d',name:'שעון fenix 5',stockStatus:'outofstock'}]);
  const run=async outOfStock=>{const profile={...p.revisions[0].profile,tenantId:p.id,pipeline:{...p.revisions[0].profile.pipeline,expansion:'off',outOfStock}};
   const r=await createSearchService(p.productCards,profile,async()=>{throw Error('no model')},{retrieve:createIndexRetriever(p.productCards,profile,p.searchIndex),...profile.pipeline})({query:'fenix',limit:10});return r.matches.map(m=>m.id.split(':').pop());};
- assert.deepEqual(await run(undefined),['b']);assert.deepEqual(await run('last'),['b','a']);assert.deepEqual((await run('show')).sort(),['a','b'],'hidden products never show');
+ assert.deepEqual(await run(undefined),['b']);assert.deepEqual(await run('last'),['b','a']);assert.deepEqual((await run('show')).sort(),['a','b'],'hidden products and out-of-stock ones without a price never show');
  const {tools}=await import('./core/studio-agent.mjs');const ctx={profile:{pipeline:{maxCandidates:40,lightweightRouter:false}}};
  assert.equal(tools.configure_search.run(ctx,{outOfStock:'last'}).outOfStock,'last');assert.throws(()=>tools.configure_search.run(ctx,{outOfStock:'all'}),/outOfStock/);
+});
+
+test('products the store marks popular (isWooPopular) are lifted by default among equally relevant results',async()=>{
+ const {createDraftRuntime}=await import('./runtime.mjs');
+ const profile={name:'s',domain:'d',productTypes:{},colors:{},finishes:{},queryAliases:{},tagDefinitions:{},badgeCandidates:{categories:[],tags:[]},badgeRules:[],rankingRules:[],pipeline:{maxCandidates:20,lightweightRouter:false,expansion:'off'}};
+ const p={id:'t',url:'https://s.co.il',platform:'woocommerce',messages:[],revisions:[{number:1,profile}],catalog:{products:[
+  {id:'1',name:'כיסוי שקוף',categories:[],tags:[],stockStatus:'instock',status:'ACTIVE'},{id:'2',name:'כיסוי שחור',categories:[],tags:['isWooPopular'],stockStatus:'instock',status:'ACTIVE'},
+  {id:'3',name:'מטען',categories:[],tags:['isWooPopular'],stockStatus:'instock',status:'ACTIVE'}]}};
+ const rt=createDraftRuntime(p,p.revisions[0]);
+ assert.deepEqual((await rt.search({query:'כיסוי'})).matches.map(m=>m.id),['2','1']);
+ assert.equal(profile.rankingRules.length,0,'the saved profile is not changed');
 });

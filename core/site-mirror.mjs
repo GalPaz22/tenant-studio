@@ -5,9 +5,10 @@ import https from 'node:https';
 import {lookup} from 'node:dns/promises';
 import {gunzipSync,inflateSync,brotliDecompressSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
-import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import {mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {publicAddress} from '../discover.mjs';
+import {scrapeAgent} from './egress.mjs';
 
 const MAX_BYTES=25*1024*1024;
 const DROP=new Set(['content-security-policy','content-security-policy-report-only','x-frame-options','strict-transport-security','set-cookie','content-length','content-encoding','transfer-encoding','connection','keep-alive','alt-svc','link','referrer-policy','cross-origin-opener-policy','cross-origin-embedder-policy','cross-origin-resource-policy','report-to','nel','permissions-policy','clear-site-data','expect-ct','server-timing']);
@@ -72,7 +73,7 @@ export async function fetchOrigin(url,{userAgent,accept,language,ajax}={}){
  const answers=await lookup(u.hostname,{all:true,family:4});
  if(!answers.length||answers.some(x=>!publicAddress(x.address)))throw Error('כתובת רשת פנימית אינה מותרת');
  return new Promise((ok,fail)=>{
-  const req=https.request(u,{method:'GET',headers:{'User-Agent':userAgent||'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36','Accept':accept||'*/*','Accept-Language':language||'he-IL,he;q=0.9,en;q=0.8','Accept-Encoding':'gzip, deflate, br',...(ajax?{'X-Requested-With':'XMLHttpRequest'}:{})},lookup:(_h,o,cb)=>o.all?cb(null,[{address:answers[0].address,family:4}]):cb(null,answers[0].address,4)},res=>{
+  const req=https.request(u,{agent:scrapeAgent(),method:'GET',headers:{'User-Agent':userAgent||'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36','Accept':accept||'*/*','Accept-Language':language||'he-IL,he;q=0.9,en;q=0.8','Accept-Encoding':'gzip, deflate, br',...(ajax?{'X-Requested-With':'XMLHttpRequest'}:{})},lookup:(_h,o,cb)=>o.all?cb(null,[{address:answers[0].address,family:4}]):cb(null,answers[0].address,4)},res=>{
    let size=0;const chunks=[];
    res.on('data',c=>{size+=c.length;if(size>MAX_BYTES)req.destroy(Error('המשאב גדול מדי למראה'));else chunks.push(c);});
    res.on('end',()=>{try{ok({status:res.statusCode,headers:res.headers,body:decode(Buffer.concat(chunks),res.headers['content-encoding'])})}catch(e){fail(e)}});
@@ -111,6 +112,7 @@ export function createMirror({dataDir,fetcher=fetchOrigin}){
  }
  // project: {id,url}; path: origin path+query (starting with /). Returns {status,headers,body}.
  // transform({url,text,type}) may return replacement origin text (before URL rewriting) or null.
+ // overlay: the snippet injected into HTML, or a function returning it (called after transform has run).
  async function serve(project,path,{prefix='/demo/'+project.id,absolute=prefix,refresh=false,userAgent,accept,language,ajax,overlay,transform}={}){
   const origin=new URL(project.url).origin,hosts=mirrorHosts(project.url);
   const target=new URL(path,origin);if(!hosts.includes(target.hostname.toLowerCase()))throw Error('מחוץ לאתר הלקוח');
@@ -124,18 +126,32 @@ export function createMirror({dataDir,fetcher=fetchOrigin}){
    let text=body.toString('utf8');
    // A failed transform serves the site's original response rather than breaking the page.
    if(transform&&r.status===200)try{const replaced=await transform({url:target.href,text,type,request:{userAgent,accept,language,ajax}});if(typeof replaced==='string')text=replaced;}catch(e){console.error('demo transform',target.pathname,e.message);}
-   if(/html/i.test(type))text=rewriteHtml(text,{hosts,prefix,absolute,inject:overlay||''});
+   if(/html/i.test(type))text=rewriteHtml(text,{hosts,prefix,absolute,inject:typeof overlay==='function'?overlay():overlay||''});
    else if(/css/i.test(type))text=rewriteCss(text,hosts,prefix,absolute);
    else text=rewriteAbsolute(text,hosts,absolute);
    body=Buffer.from(text,'utf8');
   }
   return {status:r.status,headers,body,fromCache:!!r.fromCache};
  }
- return {serve,fetchText,blockedUntil:id=>Math.max(0,(blocked.get(id)||0)-Date.now())};
+ // A results page of this store that is already in the cache (same path, a plain code as its only parameter), for
+ // stores that refuse the mirror new pages: {path,query}, or null. The code is easy to tell apart from the page's text.
+ const frames=new Map();
+ async function cachedFrame(project,pathname,param){
+  const key=project.id+'\n'+pathname+'\n'+param;if(frames.has(key))return frames.get(key);
+  let found=null,files=[];try{files=await readdir(resolve(cacheDir,project.id));}catch{}
+  for(const file of files){
+   if(!file.endsWith('.json'))continue;
+   try{const meta=JSON.parse(await readFile(resolve(cacheDir,project.id,file),'utf8')),u=new URL(meta.url),q=u.searchParams.get(param);
+    if(u.pathname===pathname&&[...u.searchParams].length===1&&/^[A-Za-z0-9_-]{6,40}$/.test(q||'')&&/html/i.test(meta.headers?.['content-type']||'')){found={path:u.pathname+u.search,query:q};break;}}catch{}
+  }
+  if(found)frames.set(key,found);return found;
+ }
+ return {serve,fetchText,cachedFrame,blockedUntil:id=>Math.max(0,(blocked.get(id)||0)-Date.now())};
 }
 
 // Shopper-facing snippet injected into every mirrored HTML page.
-export function overlayTag(project,mode='native',prefix='/demo/'+project.id){
- const cfg={id:project.id,prefix,name:project.name||'',hosts:mirrorHosts(project.url),mode};
+// search: {query} on a results page served without its grid; the page then decides between the advisor and the results.
+export function overlayTag(project,mode='native',prefix='/demo/'+project.id,search=null){
+ const cfg={id:project.id,prefix,name:project.name||'',hosts:mirrorHosts(project.url),mode,concierge:project.concierge===true,...(search?{search}:{})};
  return `<meta name="robots" content="noindex,nofollow"><script>window.__SEMANTIX_DEMO__=${JSON.stringify(cfg).replace(/</g,'\\u003c')};</script><script src="/demo-overlay.js"></script>`;
 }

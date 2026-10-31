@@ -1,6 +1,9 @@
 import {refreshClientProfile} from './core/client-brain.mjs';
 import {reviewSearchPerformance,proposalRequest} from './core/search-performance.mjs';
 import {workspaceAgent} from './core/workspace-agent.mjs';
+import {installCustomerChat} from './core/customer-chat.mjs';
+import {createCustomerProjectRecovery,saveCustomerProject} from './core/customer-project.mjs';
+import {installCustomerDashboard} from './core/customer-dashboard.mjs';
 import {studioAgent,tools as studioTools,createStudioSearch} from './core/studio-agent.mjs';
 import {auditSearches} from './core/search-audit.mjs';
 import {readProductionSignals,buildBaseline,evaluateBaseline,applyPopularity,baselineRegressions} from './core/baseline.mjs';
@@ -10,9 +13,11 @@ import {mergeCrawl,get as getPage} from './core/site-crawler.mjs';
 import {createCrawlDb} from './core/crawl-store.mjs';
 import {crawlStatus,crawlSettings,crawlTarget,startCrawl,stopCrawl,validateSettings,ensureLocalWorker} from './core/crawl-control.mjs';
 import {runInProcess,runningInProcess} from './core/crawl-worker.mjs';
-import {conciergeTurn,decideTrigger,outOfStockHits,settingsOf} from './core/concierge.mjs';
+import {CONCIERGE_MODELS} from './core/concierge-models.mjs';
+import {createConciergeLog} from './core/concierge-log.mjs';
+import {OPENERS,soldOutHits,conciergeTurn,evaluateConciergeTrigger,classifyConciergeQuery,inspectTrigger,outOfStockHits,settingsOf,applyConciergeSettings} from './core/concierge.mjs';
 import {analyzeExisting,reindexExisting} from './core/fast-track.mjs';
-import {loadExistingClient,refreshSourceFields,dbFields,dbSearch,importDbField} from './existing-client.mjs';
+import {loadExistingClient,refreshSourceFields,refreshLiveFields,dbFields,dbSearch,importDbField} from './existing-client.mjs';
 import {learningSummary,learningState,importExamples,captureExamples,reviewExample,proposeLearning,evaluateExamples,guardLearning,acceptProposal,refreshProposal} from './core/learning.mjs';
 import {focusedRepair} from './core/focused-repair.mjs';
 import {prepareRepair,finishRepair} from './core/repair.mjs';
@@ -25,21 +30,23 @@ import {resolve} from 'node:path';
 import {stat,mkdir,rename,rm} from 'node:fs/promises';
 import {createStore} from './store.mjs';
 import {discover} from './discover.mjs';
-import {askAgent,askChatAgent,askStudioAgent,askJudgeAgent,askPlanner,askProcessing,studioModel,chatModel,contract,validateProfile} from './model.mjs';
+import {askAgent,askChatAgent,askConciergeAgent,askStudioAgent,askJudgeAgent,askPlanner,askReport,askProcessing,studioModel,chatModel,contract,validateProfile} from './model.mjs';
 import {createDraftRuntime,indexDefinition} from './runtime.mjs';
 import {provision} from './provision.mjs';
 import {buildArtifacts} from './artifacts.mjs';
 import {zipFiles} from './zip.mjs';
 import {scrapeCatalog,applyObservations} from './scraper.mjs';
+import {scanStoreLabels,applyLabelScan,labelScanConfig,labelsOf} from './core/label-scan.mjs';
 import {generate} from './core/gemini.mjs';
 import {classifyTag} from './core/tagging.mjs';
 import {researchGarmin} from './garmin-research.mjs';
 import {createRunStore} from './core/run-store.mjs';
-import {newBuild,validateBuildOptions,executeBuild} from './core/build.mjs';
+import {newBuild,validateBuildOptions,executeBuild,SKIPPABLE} from './core/build.mjs';
 import {hash} from './core/catalog.mjs';
 import {buildSearchIndex} from './core/search-index.mjs';
 import {createMongoRetriever} from './core/mongo-retriever.mjs';
-import {connectorFor,useShopifyInstalls} from './core/connectors.mjs';
+import {connectorFor,useShopifyInstalls,useStoredCredentials} from './core/connectors.mjs';
+import {createCredentials,validateWooCredentials,checkWooCredentials} from './core/store-credentials.mjs';
 import {createInstalls,appCredentials,appUrls,publicUrl,validHmac,validShop,authorizeUrl,exchangeCode,fetchFeed,applyFeed,validateFeed,feedDue,newState,ensurePixel,SCOPES} from './core/shopify-feed.mjs';
 import {validateSync,syncDue} from './core/sync.mjs';
 import {createMirror,overlayTag,SiteBlocked,fetchOrigin,isChallenge} from './core/site-mirror.mjs';
@@ -49,7 +56,7 @@ import {readRolloutReport} from './core/rollout-report.mjs';
 import {engineTag,engineSource,engineDir,previewConfig,enginePage,engineSuggestions,recordEvent,readEvents,clearEvents} from './core/takeover-preview.mjs';
 import {buildShopifyTakeover,buildWooTakeover,shopSlug} from './core/takeover-export.mjs';
 import {publishToShopify,readApp,organizations,appsDir,settings as shopifySettings} from './core/shopify-apps.mjs';
-import {createNativeSearch,catalogLookup} from './core/native-search.mjs';
+import {createNativeSearch,catalogLookup,searchParam} from './core/native-search.mjs';
 import {storeHome,detectStore,demoBuildOptions} from './core/onboard.mjs';
 import {fetchPublic} from './discover.mjs';
 import {buildMiniServer} from './mini-server.mjs';
@@ -63,12 +70,16 @@ import {slugOf} from './mini-server.mjs';
 const dir=fileURLToPath(new URL('.',import.meta.url));
 const dataDir=resolve(process.env.STUDIO_DATA_DIR||dir+'data');
 const agentLogs=createStore(resolve(dataDir,'agent-logs'));
+const conciergeLog=createConciergeLog(resolve(dataDir,'concierge-logs'));
 const store=createStore(dataDir),runs=createRunStore(resolve(dataDir,'runs'));
 const queue=new Set();let draining=false;
 const locks=new Set(),runtimes=new Map();let active=0;
 const port=Number(process.env.PORT||process.env.STUDIO_PORT||4320),token=randomUUID();
 const allowRemote=process.env.ALLOW_REMOTE==='true'||!!process.env.RENDER||process.env.NODE_ENV==='production';
 const app=express();
+app.get('/healthz',(_req,res)=>res.json({ok:true,service:'tenant-studio',revision:process.env.RENDER_GIT_COMMIT||null,customerProjectRecovery:true}));
+app.use('/api/customer-chat',express.json({limit:'256kb'}));
+app.use('/api/customer-dashboard',express.json({limit:'256kb'}));
 app.use('/api/projects/:id/plugin/import',express.json({limit:'12mb'}));
 app.use('/api/projects/:id/plugin/edit',express.json({limit:'2mb'}));
 app.use('/api/projects/:id/takeover/settings',express.json({limit:'256kb'}));
@@ -101,12 +112,15 @@ const mirror=createMirror({dataDir}),native=createNativeSearch();
 // With a database they are shared: the public studio receives the install, the studio holding the project runs the feed.
 const installsUri=process.env.STUDIO_SHOPIFY_INSTALLS==='file'?null:process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;
 let installsClient=null;
-const installsCollection=installsUri?async()=>{
+const sharedCollection=name=>installsUri?async()=>{
  if(!installsClient){const {MongoClient}=await import('mongodb');installsClient=new MongoClient(installsUri,{serverSelectionTimeoutMS:10000,socketTimeoutMS:60000});}
- await installsClient.connect();return installsClient.db(process.env.STUDIO_CRAWL_DB||'semantix_studio').collection('shopify_installs');
+ await installsClient.connect();return installsClient.db(process.env.STUDIO_CRAWL_DB||'semantix_studio').collection(name);
 }:null;
+const installsCollection=sharedCollection('shopify_installs');
 // (Shared tokens are first read by the feed tick, not at start-up.)
 const installs=createInstalls(dataDir,{collection:installsCollection});if(!installs.shared)installs.load().catch(e=>console.error('shopify installs',e.message));useShopifyInstalls(installs.peek);
+// Store API keys entered per tenant in the studio (WooCommerce ck/cs) for an authorized catalog read.
+const credentials=createCredentials(dataDir,{collection:sharedCollection('store_credentials')});credentials.load().catch(e=>console.error('store credentials',e.message));useStoredCredentials(credentials.peek);
 const lookups=new WeakMap();
 function lookupFor(rt,url){if(!lookups.has(rt))lookups.set(rt,catalogLookup(rt.products,new URL(url).origin));return lookups.get(rt);}
 // Up to n semantix results (the service pages at 50).
@@ -162,12 +176,65 @@ app.get('/demo/:id/__semantix/engine/search/:more(load-more|auto-load-more)',rou
 app.get('/demo/:id/__semantix/engine/autocomplete',route(async(req,res)=>{
  const query=String(req.query.query||'').trim().slice(0,200);if(query.length<2)return res.json([]);
  if(active>=2)return res.status(429).json({error:'busy'});active++;
- try{const project=await store.meta(req.params.id),r=await (await runtime(req.params.id)).search({query,limit:8});recordEvent(req.params.id,'autocomplete',{query});
+ // The same rule-driven, index-only suggestions the exported module serves.
+ try{const project=await store.meta(req.params.id),r=await (await runtime(req.params.id)).suggest(query,{limit:Math.min(Math.max(parseInt(req.query.limit,10)||8,1),24)});recordEvent(req.params.id,'autocomplete',{query});
   res.json(engineSuggestions(r.matches,u=>demoProductUrl(req.params.id,project.url,u,demoPrefix(req,req.params.id))));}finally{active--;}
 }));
 // Tracking the engine sends (product-click, search-to-cart incl. checkout, zero-search…) is logged for verification only.
 app.post('/demo/:id/__semantix/engine/:event([a-z-]{3,40})',route(async(req,res)=>{await store.meta(req.params.id);recordEvent(req.params.id,req.params.event,req.body);res.status(204).end();}));
 
+// The shopper concierge on the mirrored site: the same classifier and turn as the studio preview, reachable from the
+// demo host (which has no /api). Product links stay inside the mirror.
+let advising=0;
+const advised=fn=>route(async(req,res)=>{if(advising>=4)return res.status(429).json({error:'המערכת עסוקה'});advising++;try{await fn(req,res);}finally{advising--;}});
+// Advisor or results, for one search on the mirrored site. Two answers race: the query alone (does it ask for advice?)
+// and the search itself (nothing found, or only out of stock); the first to say "open" wins. A merchant opening policy
+// replaces the result-based moments. Decisions are kept for ten minutes, so the page that follows needs no second ask.
+// Shopper requests read the project often and never change it; a large project file takes seconds to parse, so the
+// parsed project is kept until the file changes (the meta carries its mtime).
+const shopperProjects=new Map();
+async function shopperProject(id){
+ const {mtimeMs}=await store.meta(id),hit=shopperProjects.get(id);if(hit?.mtimeMs===mtimeMs)return hit.project;
+ const project=await store.read(id);shopperProjects.set(id,{mtimeMs,project});return project;
+}
+const decisions=new Map();
+function conciergeDecision(id,query){
+ const key=id+'\n'+query,hit=decisions.get(key);if(hit&&Date.now()-hit.at<600000)return hit;
+ if(decisions.size>500)decisions.clear();
+ const entry={at:Date.now(),value:undefined};
+ entry.promise=(async()=>{
+  const p=await shopperProject(id),settings=settingsOf(p),model=app.locals.conciergeAgent||askConciergeAgent;if(!settings.enabled)return {open:false};
+  const opened=x=>x.then(t=>t||Promise.reject(Error('closed')));
+  const asked=classifyConciergeQuery(p,query,model).then(c=>c.open?c.trigger:null);
+  const found=(async()=>{
+   const r=await (await runtime(id)).search({query:query.slice(0,200),limit:24});
+   if(settings.triggerPrompt)return (await evaluateConciergeTrigger(p,query,r,model)).trigger;
+   // "Nothing found" includes the search's own fallback (unverified suggestions from the catalog); a semantic answer
+   // to a descriptive query is a result, not a moment.
+   const moment=inspectTrigger(p,query,r),m=r.metadata||{},nothing=m.phase==='closest-alternatives'||m.closestFallback||m.mode==='catalog-fallback';
+   const reason=soldOutHits(p.productCards,query,r.matches).length?'out_of_stock':nothing?'no_results':moment?.reason==='non_literal'?null:moment?.reason;
+   return reason?{enabled:true,should_open:true,display:settings.autoOpen?'auto':'pill',reason,query,opener:OPENERS[reason],product_ids:[]}:null;
+  })().catch(e=>{console.error('[concierge] search moment not checked:',e.message);return null;});
+  const trigger=await Promise.any([opened(asked),opened(found)]).catch(()=>null);
+  return trigger?{open:true,trigger}:{open:false};
+ })().then(value=>entry.value=value,e=>{decisions.delete(key);throw e;});
+ decisions.set(key,entry);return entry;
+}
+app.post('/demo/:id/__semantix/concierge/decide',advised(async(req,res)=>{
+ const query=typeof req.body?.query==='string'?req.body.query.trim():'';if(query.length<2||query.length>300)return res.json({open:false});
+ await store.meta(req.params.id);res.json(await conciergeDecision(req.params.id,query).promise);
+}));
+// The results page of a search that is not decided yet is served as a shell: the store's own "nothing found" page for a
+// placeholder query (fetched once, then read from the mirror cache), with the shopper's query written in. The response
+// does not wait for the store, the search or a model; the page shows a loader where its results would be and asks.
+const SHELL_QUERY='zqsemantixshellqz';
+export function shellFor(text,query,placeholder=SHELL_QUERY){
+ const shown=query.replace(/\\/g,'').replace(/[&<>"']/g,c=>`&#${c.charCodeAt(0)};`);
+ return text.replace(new RegExp(`([?&][\\w.-]+=)?${placeholder}`,'gi'),(_,param)=>param?param+encodeURIComponent(query):shown);
+}
+// Stores that refused the placeholder page (bot protection answers the mirror 403 on pages their CDN does not hold).
+const shellRefused=new Set();
+app.post('/demo/:id/__semantix/concierge/stream',advised((req,res)=>conciergeStream(req,res,(p,c)=>({...c,url:demoProductUrl(p.id,p.url,c.url,demoPrefix(req,p.id))}))));
 // In the engine preview, add-to-cart requests the engine sends are answered here in the store's own response shape, so
 // the whole flow (button → cart request → tracking) runs; nothing is sent to the store and its real cart does not change.
 const CART_OK={magento:()=>({}),woocommerce:()=>({fragments:{},cart_hash:''}),shopify:b=>({items:(b?.items||[]).map(i=>({id:i.id,quantity:i.quantity||1}))})};
@@ -184,23 +251,39 @@ async function previewCartAdd(req,res,next){
  res.json((CART_OK[cfg.platform]||CART_OK.magento)(body));
 }
 app.all(DEMO,route(async(req,res)=>{
- const [,id,rest]=DEMO.exec(req.path);if(!rest)return res.redirect(302,'/demo/'+id+'/');
+ // The query string goes along: the store's search form submits to the mirror's root without the trailing slash.
+ const [,id,rest]=DEMO.exec(req.path);if(!rest)return res.redirect(302,'/demo/'+id+'/'+(req.originalUrl.match(/\?.*$/)?.[0]||''));
  if(!['GET','HEAD'].includes(req.method))return res.status(403).json({error:'מראה ההדגמה לקריאה בלבד — פעולות כמו הוספה לסל או התחברות אינן נשלחות לאתר האמיתי'});
  if(req.get('Service-Worker'))return res.status(404).end();
- const p=await store.meta(id);if(!p.url)throw Error('לפרויקט אין כתובת אתר');
+ const p=await store.meta(id);if(!hasSiteUrl(p))throw Error('לפרויקט אין כתובת אתר');
  const url=new URL(req.originalUrl,'http://x'),refresh=url.searchParams.has('__semantix_refresh');url.searchParams.delete('__semantix_refresh');
  // ?__semantix_mode=plugin|overlay|native switches how search is demonstrated (remembered in a studio-only cookie).
  const asked=url.searchParams.get('__semantix_mode');
  if(asked){url.searchParams.delete('__semantix_mode');const selected=['plugin','overlay','native','engine'].includes(asked)?asked:'native';res.cookie('semantix_demo_mode',selected,{path:req.demoHost?'/':'/demo/'+id,sameSite:'lax',httpOnly:true});return res.redirect(302,demoPrefix(req,id)+url.pathname.slice(('/demo/'+id).length)+url.search);}
  const mode=demoMode(req);
+ // ?__semantix_results=1: the shopper asked for the regular results of an advisory query ("all results").
+ const wantsResults=url.searchParams.has('__semantix_results');url.searchParams.delete('__semantix_results');
  const path=url.pathname.slice(('/demo/'+id).length)+url.search;
  try{
+  const advisory=mode==='native'&&p.concierge&&!wantsResults&&req.method==='GET'&&req.get('X-Requested-With')!=='XMLHttpRequest'&&/text\/html/.test(req.get('Accept')||'')?searchParam(new URL(path,p.url).href):null;
+  const serving={prefix:demoPrefix(req,id),absolute:req.demoHost?`http://${req.headers.host}`:demoPrefix(req,id),userAgent:req.get('User-Agent'),accept:req.get('Accept'),language:req.get('Accept-Language')};
+  // A search already decided as a plain one gets its results below; any other gets the shell (and so does every
+  // search on a store that refuses the mirror its results pages).
+  if(advisory&&advisory.value.length<=300&&(shellRefused.has(id)||conciergeDecision(id,advisory.value).value?.open!==false)){
+   const shell=new URL(path,'http://x');shell.searchParams.set(advisory.name,SHELL_QUERY);
+   const page=(at,placeholder,frame)=>mirror.serve(p,at,{...serving,overlay:overlayTag(p,mode,serving.prefix,{query:advisory.value,...(frame?{frame:true}:{})}),transform:({text,type})=>/html/i.test(type)?shellFor(text,advisory.value,placeholder):null});
+   let r=shellRefused.has(id)?null:await page(shell.pathname+shell.search).catch(()=>null);
+   // Such a store gets the frame of a results page the mirror already holds; the page then shows semantix results
+   // itself (frame:true), since the store would refuse the real results page as well.
+   if(r?.status!==200){shellRefused.add(id);const frame=await mirror.cachedFrame(p,shell.pathname,advisory.name);r=frame?await page(frame.path,frame.query,true):null;}
+   if(r?.status===200){res.status(200).set(r.headers);return res.end(r.body);}
+  }
   const transform=mode==='native'?async({url:href,text,type,request})=>{
    const rt=await runtime(id);
    return native.render({project:p,url:href,text,type,lookup:lookupFor(rt,p.url),fetchText:u=>mirror.fetchText(p,u,request),search:(q,n)=>searchUpTo(rt,q,n)});
   }:null;
   const injection=mode==='plugin'?`<meta name="robots" content="noindex,nofollow"><script defer src="/demo/${id}/__semantix/plugin.js"></script>`:mode==='engine'?engineTag(p):overlayTag(p,mode,demoPrefix(req,id));
-  const r=await mirror.serve(p,path,{prefix:demoPrefix(req,id),absolute:req.demoHost?`http://${req.headers.host}`:demoPrefix(req,id),refresh,userAgent:req.get('User-Agent'),accept:req.get('Accept'),language:req.get('Accept-Language'),ajax:req.get('X-Requested-With')==='XMLHttpRequest',overlay:injection,transform});
+  const r=await mirror.serve(p,path,{...serving,refresh,ajax:req.get('X-Requested-With')==='XMLHttpRequest',overlay:injection,transform});
   res.status(r.status).set(r.headers);res.end(req.method==='HEAD'?undefined:r.body);
  }catch(e){
   if(e instanceof SiteBlocked){const min=Math.max(1,Math.ceil((e.until-Date.now())/60000));return res.status(503).set('Retry-After',String(min*60)).type('text/html; charset=utf-8').send(`<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><title>ההדגמה מושהית</title><body style="font-family:system-ui;max-width:560px;margin:12vh auto;padding:0 16px;line-height:1.6;color:#1b1f24"><h1 style="font-size:22px">האתר ביקש אימות מהשרת של ההדגמה</h1><p>מנגנון הגנת הבוטים של ${String(new URL(p.url).hostname).replace(/[<>&"]/g,'')} חסם זמנית בקשות מהשרת הזה. ההדגמה לא עוקפת את החסימה.</p><p>דפים שכבר נטענו בעבר ממשיכים לעבוד מהמטמון. נסו שוב בעוד כ־${min} דקות, או בקשו מהלקוח להתיר את כתובת ה־IP של השרת.</p><p><a href="javascript:history.back()">חזרה</a></p></body></html>`);}
@@ -240,6 +323,8 @@ app.get('/shopify/:id/callback',route(async(req,res)=>{
  }catch(e){res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});return toAdmin(req,res,r,e.message);}
  res.clearCookie('sx_shopify_state',{path:'/shopify/'+r.id});toAdmin(req,res,r);
 }));
+const customerChatOperations=installCustomerChat(app,{store,drafts:createStore(resolve(dataDir,'customer-chat-drafts')),persist:async p=>{await saveCustomerProject(p);return persist(p);},recoverProject:createCustomerProjectRecovery(store),locked,publish:publishModule,model:()=>app.locals.studioAgent||askStudioAgent,judge:()=>app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent,services:()=>app.locals.studioServices||{}});
+await installCustomerDashboard(app,{operations:customerChatOperations});
 app.get('/api/session',(_req,res)=>res.json({token}));
 app.use('/api', (req,res,next)=>{
  if(req.method==='POST'&&/^\/projects\/[a-f0-9-]{36}\/sync\/event$/.test(req.path)&&!req.get('X-Studio-Token')){
@@ -264,7 +349,7 @@ function stopOnClose(res){
 }
 async function locked(id,fn){if(locks.has(id)||active>=2)throw Error('כבר מתבצעת פעולה. נסו שוב בעוד רגע.');locks.add(id);active++;try{return await fn()}finally{locks.delete(id);active--}}
 function summary(p,run=null){return {...p,pluginWorkspace:p.pluginWorkspace?{name:p.pluginWorkspace.name,platform:p.pluginWorkspace.platform,revision:p.pluginWorkspace.revisions.at(-1)?.number}:null,productCards:undefined,searchIndex:undefined,vectorIndex:undefined,studioVectors:p.studioVectors?{model:p.studioVectors.model,dimensions:p.studioVectors.dimensions,count:p.studioVectors.ids.length,builtAt:p.studioVectors.builtAt}:undefined,tagAssignments:Object.fromEntries(Object.entries(p.tagAssignments||{}).map(([tag,a])=>[tag,{counts:a.counts,productsScanned:a.productsScanned,failedBatches:a.failedBatches}])),buildRun:run?{...run,checkpoints:undefined,pinnedProfile:undefined}:null,catalog:p.catalog?{...p.catalog,products:undefined,count:p.catalog.products.length}:null}}
-async function projectSummary(p){const run=p.buildRunId?await runs.read(p.buildRunId):null;return {...summary(p,run),learning:learningSummary(p),chatModel:chatModel(),studioModel:studioModel(),previewSearchAvailable:!p.revisions.length&&run?.status==='partial'&&run.stages.some(s=>s.key==='index'&&s.status==='completed'),connectorAvailable:!!connectorFor(p),takeoverReady:!!p.takeover?.siteConfig?.features?.fullReplace}}
+async function projectSummary(p){await credentials.load().catch(()=>{});const run=p.buildRunId?await runs.read(p.buildRunId):null;return {...summary(p,run),learning:learningSummary(p),conciergeModels:CONCIERGE_MODELS,chatModel:chatModel(),studioModel:studioModel(),previewSearchAvailable:!p.revisions.length&&run?.status==='partial'&&run.stages.some(s=>s.key==='index'&&s.status==='completed'),connectorAvailable:!!connectorFor(p),takeoverReady:!!p.takeover?.siteConfig?.features?.fullReplace}}
 async function persist(p){p.events=p.events.slice(-100);p.updatedAt=new Date().toISOString();const saved=await store.save(p);schedulePublish(p);return saved;}
 // Every approved revision of an exported module is published to the store's database (semantix_module), where
 // dashboard-server picks it up within 30 s; the production switch on the user still decides whether shoppers see it.
@@ -344,7 +429,7 @@ async function drainBuilds(){
 }
 async function enqueueBuild(id,options,{trigger=null}={}){
  const run=await locked(id,async()=>{
-  const p=await store.read(id);if(p.revisions.length>=100)throw Error('מגבלת 100 גרסאות');
+  const p=await store.read(id);if(p.revisions.length>=100)throw Error('מגבלת 100 גרסאות');await credentials.load();
   if(p.buildRunId&&['queued','running'].includes((await runs.read(p.buildRunId)).status))throw Error('כבר קיימת ריצת בנייה');
   const run=newBuild(p,validateBuildOptions(options,p.platform));run.trigger=trigger;
   if(run.options.indexTarget==='mongo'&&!process.env.MONGODB_URI)throw Error('יש להגדיר חיבור Mongo לפני בחירת אינדקס Atlas');
@@ -448,6 +533,12 @@ async function feedTick(){if(feeding)return;feeding=true;try{
 const feedTimer=setInterval(()=>feedTick().catch(console.error),60000);feedTimer.unref();
 app.get('/api/projects',route(async(_req,res)=>res.json(await store.list())));
 app.get('/api/projects/:id',route(async(req,res)=>res.json(await projectSummary(await store.read(req.params.id)))));
+// Existing clients whose saved products carry no links open with a placeholder address; the operator sets the real one.
+function hasSiteUrl(p){try{return !!p?.url&&!new URL(p.url).hostname.endsWith('.invalid');}catch{return false;}}
+app.post('/api/projects/:id/url',route(async(req,res)=>{
+ const home=storeHome(req.body?.url),p=await store.read(req.params.id);
+ p.url=home;p.events.push({text:'כתובת האתר עודכנה: '+home,at:new Date().toISOString()});await persist(p);runtimes.delete(p.id);res.json(await projectSummary(p));
+}));
 app.post('/api/existing-client',route(async(req,res)=>locked('existing-client',async()=>{
  const username=req.body.username,userId=typeof req.body.userId==='string'?req.body.userId:null;if(typeof username!=='string'||!username.trim()||username.length>120)throw Error('יש להזין שם משתמש קיים');
  // Without a pick, an already-open project with this exact username is reused; a pick is always resolved first.
@@ -506,7 +597,7 @@ app.post('/api/onboard',route(async(req,res)=>{
 app.post('/api/projects/:id/onboard/build',route(async(req,res)=>{
  const p=await store.read(req.params.id),detection=p.onboarding?.detection;if(!detection)throw Error('ללקוח הזה אין זיהוי אתר מקליטה');
  if(detection.source.scraper&&p.scraper?.status!=='active')throw Error('דרוש סורק ייעודי פעיל — בנה אותו בלשונית ״סורק״');
- const run=await enqueueBuild(p.id,demoBuildOptions(detection),{trigger:'onboard'});res.status(202).json({started:true,runId:run.id});
+ const run=await enqueueBuild(p.id,{...demoBuildOptions(detection),...(req.body?.skipStages&&{skipStages:req.body.skipStages})},{trigger:'onboard'});res.status(202).json({started:true,runId:run.id});
 }));
 // Deleting a client moves its project file, build runs and agent log to data/trash/<id>-<time>/ (restorable by moving
 // them back) and drops its demo mirror cache. The client's own source database is never touched. The name must be retyped.
@@ -520,7 +611,8 @@ app.post('/api/projects/:id/delete',route(async(req,res)=>locked(req.params.id,a
  await move(resolve(dataDir,id+'.json'),resolve(dest,id+'.json'));await rm(resolve(dataDir,id+'.meta.json'),{force:true});
  for(const r of owned)await move(resolve(dataDir,'runs',r.id),resolve(dest,'runs',r.id));
  await move(resolve(dataDir,'agent-logs',id+'.json'),resolve(dest,'agent-log.json'));
- await rm(resolve(dataDir,'mirror',id),{recursive:true,force:true});
+ await move(conciergeLog.path(id),resolve(dest,'concierge-log.jsonl'));
+ await rm(resolve(dataDir,'mirror',id),{recursive:true,force:true});await credentials.remove(id).catch(()=>{});
  const crawlStore=app.locals.crawlStore||crawls;if(crawlStore)try{if((await crawlStore.meta(id))?.desired==='running')await crawlStore.control(id,{desired:'stopped'});}catch{}
  queue.delete(id);runtimes.clear();runtimeByFile.clear();
  res.json({deleted:true,name:p.name,trash:dest});
@@ -531,13 +623,34 @@ app.post('/api/projects/:id/fast-track',route(async(req,res)=>locked(req.params.
  else if(req.body.action==='reindex'){reindexExisting(p);runtimes.clear();}
  else throw Error('פעולה לא תקינה');await persist(p);res.json(await projectSummary(p));
 })));
+// Store API credentials (WooCommerce consumer key/secret): checked against the store before they are kept.
+// The browser gets back only the store URL, the key's ends and the check — the secret never leaves the server.
+app.get('/api/projects/:id/store-api',route(async(req,res)=>{
+ const p=await store.meta(req.params.id);let env=false;try{env=!!JSON.parse(process.env.STUDIO_CONNECTORS||'{}')[p.id];}catch{}
+ res.json({connection:await credentials.view(p.id),env,storeUrl:p.url});
+}));
+app.post('/api/projects/:id/store-api',route(async(req,res)=>locked(req.params.id,async()=>{
+ const p=await store.read(req.params.id),c=validateWooCredentials(req.body||{},p.url);
+ const check=await checkWooCredentials(c,app.locals.fetchStoreApi||((url,options)=>fetchPublic(url,0,options)));
+ await credentials.set(p.id,{...c,savedAt:new Date().toISOString(),check});
+ p.events.push({text:'נשמר חיבור WooCommerce API לקריאת הקטלוג',at:new Date().toISOString()});await persist(p);
+ res.json({connection:await credentials.view(p.id)});
+})));
+app.post('/api/projects/:id/store-api/delete',route(async(req,res)=>locked(req.params.id,async()=>{await store.meta(req.params.id);await credentials.remove(req.params.id);res.json({connection:null});})));
 app.post('/api/projects/:id/build',route(async(req,res)=>{
  if(locks.has(req.params.id))return res.status(409).json({error:'כבר מתבצעת פעולה'});
  const run=await enqueueBuild(req.params.id,req.body.options||{});res.status(202).json({started:true,runId:run.id});
 }));
 app.post('/api/projects/:id/build/control',route(async(req,res)=>{
  const p=await store.read(req.params.id);if(!p.buildRunId)throw Error('אין ריצת בנייה');const run=await runs.read(p.buildRunId),action=req.body.action;
- if(!['pause','cancel','resume'].includes(action))throw Error('פעולה לא תקינה');
+ if(!['pause','cancel','resume','skip'].includes(action))throw Error('פעולה לא תקינה');
+ if(action==='skip'){const stage=run.stages.find(s=>s.key===req.body.stage),skipStages=[...new Set([...(run.options.skipStages||[]),req.body.stage])];
+  if(!SKIPPABLE.includes(req.body.stage)||!stage)throw Error('לא ניתן לדלג על השלב הזה');if(['completed','skipped'].includes(stage.status))throw Error('השלב כבר הסתיים');
+  if(['ready','activated'].includes(run.status))throw Error('הריצה כבר הסתיימה');
+  // A live run picks the request up at its next checkpoint; a stopped one carries it into the resume.
+  if(['queued','running'].includes(run.status)){const c=await runs.control(run.id);await runs.control(run.id,{...c,skip:[...new Set([...(c.skip||[]),stage.key])]});}
+  else{run.options={...run.options,skipStages};if(stage.status==='failed')stage.status='pending';await runs.save(run);}
+  return res.json({runId:run.id,status:run.status,skipStages});}
  if(action==='resume'){
   if(locks.has(p.id)||!['paused','failed','partial','cancelled'].includes(run.status))throw Error('הריצה אינה זמינה להמשך');
   if(p.revisions.length>=100)throw Error('מגבלת 100 גרסאות');
@@ -545,7 +658,7 @@ app.post('/api/projects/:id/build/control',route(async(req,res)=>{
   const failedStage=req.body.stage||run.stages.find(s=>s.status==='failed')?.key||(run.status==='partial'?(run.errors.find(e=>!e.optional)?.stage||'index'):null);if(failedStage)await prepareRepair(run,failedStage,p,runs);if(run.repair?.status==='needs_input')run.repair.status='executing';run.status='queued';await runs.save(run);await runs.control(run.id,{action:'run'});queue.add(p.id);drainBuilds().catch(console.error);
  }else{
   if(!['queued','running','paused'].includes(run.status))throw Error('הריצה כבר הסתיימה');
-  await runs.control(run.id,{action:action==='cancel'?'cancel':'pause'});
+  await runs.control(run.id,{...await runs.control(run.id),action:action==='cancel'?'cancel':'pause'});
   if(run.status!=='running'){run.status=action==='cancel'?'cancelled':'paused';await runs.save(run);queue.delete(p.id);}
  }
  res.json({runId:run.id,status:run.status});
@@ -562,7 +675,7 @@ app.post('/api/projects/:id/activate',route(async(req,res)=>locked(req.params.id
 async function catalogCards(p,runId=null){
  if(!runId)return p.productCards||[];const r=await runs.read(runId);if(r.projectId!==p.id)throw Error('גרסת קטלוג לא שייכת לחנות');
  try{return await runs.asset(runId,'cards')}catch(e){if(e.code!=='ENOENT')throw e;}
- try{const products=await runs.asset(runId,'products');return products.map(raw=>({...raw,title:raw.name,tenantId:p.id,summary:(raw.description||'').slice(0,400),tagDecisions:[],enrichmentStatus:'pending',buildId:runId}));}catch(e){if(e.code==='ENOENT')return [];throw e;}
+ try{const products=await runs.asset(runId,'products');return products.map(raw=>({...raw,title:raw.name,tenantId:p.id,summary:String(raw.description||'').slice(0,400),tagDecisions:[],enrichmentStatus:'pending',buildId:runId}));}catch(e){if(e.code==='ENOENT')return [];throw e;}
 }
 app.get('/api/projects/:id/products',route(async(req,res)=>{
  const p=await store.read(req.params.id);let cards=await catalogCards(p,req.query.runId||null);const query=String(req.query.q||'').toLowerCase();if(query)cards=cards.filter(p=>(p.title+' '+p.id+' '+(p.sku||'')).toLowerCase().includes(query));
@@ -580,7 +693,7 @@ app.post('/api/projects/:id/sync/event',route(async(req,res)=>locked(req.params.
  if(!p.seenSyncEvents.includes(eventId)){p.pendingSyncEvents.push({eventId,productId,action});p.seenSyncEvents=[...p.seenSyncEvents,eventId].slice(-1000);await persist(p);}
  res.status(202).json({accepted:true,eventId});
 })));
-app.post('/api/projects/:id/active/search',route(async(req,res)=>res.json(await (await runtime(req.params.id,true)).search(req.body))));
+app.post('/api/projects/:id/active/search',route(async(req,res)=>{res.json(await (await runtime(req.params.id,true)).search(req.body));}));
 app.get('/api/projects/:id/agent-logs',route(async(req,res)=>{await store.read(req.params.id);try{res.json(await agentLogs.read(req.params.id))}catch(e){if(e.code!=='ENOENT')throw e;res.json({runs:[]});}}));
 app.post('/api/projects/:id/source-fields',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);const result=await refreshSourceFields(p);await persist(p);runtimes.clear();res.json(result);})));
 app.post('/api/projects/:id/agent',route(async(req,res)=>locked(req.params.id,async()=>{
@@ -632,14 +745,14 @@ async function resumeCrawls(){if(crawlMode()!=='studio'||!crawls)return;
  const tick=async()=>{for(const item of await store.metas()){if(runningInProcess(item.id))continue;const m=await crawls.meta(item.id).catch(()=>null);if(m?.desired==='running'&&(!m.lease||Date.parse(m.lease.until)<Date.now()))runInProcess(crawls,item.id,{log:crawlLog});}};
  await tick();setInterval(()=>tick().catch(e=>console.error('crawl resume',e.message)),60000).unref();}
 app.get('/api/projects/:id/crawl',route(async(req,res)=>res.json(await crawlView(req.params.id))));
-app.post('/api/projects/:id/crawl/start',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);await startCrawl(p,needCrawls(),{reseed:req.body?.reseed===true});if(crawlMode()==='local')await ensureLocalWorker(dataDir);else if(crawlMode()==='studio')runInProcess(needCrawls(),p.id,{log:crawlLog});res.json(await crawlView(p.id));})));
+app.post('/api/projects/:id/crawl/start',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);await startCrawl(p,needCrawls(),{reseed:req.body?.reseed===true,rescan:req.body?.rescan===true});if(crawlMode()==='local')await ensureLocalWorker(dataDir);else if(crawlMode()==='studio')runInProcess(needCrawls(),p.id,{log:crawlLog});res.json(await crawlView(p.id));})));
 app.post('/api/projects/:id/crawl/stop',route(async(req,res)=>{const p=await store.read(req.params.id);await stopCrawl(p,needCrawls());res.json(await crawlView(p.id));}));
 app.post('/api/projects/:id/crawl/settings',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);p.crawler={...p.crawler,...validateSettings(req.body||{})};await persist(p);const meta=await needCrawls().meta(p.id);if(meta)await needCrawls().control(p.id,{settings:crawlSettings(p)});res.json(await crawlView(p.id));})));
 app.post('/api/projects/:id/crawl/merge',route(async(req,res)=>locked(req.params.id,async()=>{const counts=await mergeCrawled(req.params.id);res.json({...counts,crawl:await crawlView(req.params.id)});})));
 // Auto-merge: every 10 minutes, tenants that enabled it get newly crawled pages merged (skipped while the project is busy).
 // Local worker mode: a worker that exited (its watchdog, a crash) is started again, so a crawl never stays stuck.
 if(process.env.STUDIO_CRAWL_WORKER==='local')setInterval(()=>ensureLocalWorker(dataDir).then(w=>{if(w.started)console.log('crawl worker restarted',w.pid);}).catch(e=>console.error('crawl worker',e.message)),5*60*1000).unref();
-if(crawls)setInterval(async()=>{try{for(const item of await store.metas()){const id=item.id;if(locks.has(id)||!crawlSettings(item).autoMerge)continue;const p=await store.read(id);const m=await crawls.meta(id);if(!m||(m.productCount||0)<=(p.siteCrawl?.pages||0))continue;await locked(id,()=>mergeCrawled(id)).catch(()=>{});}}catch(e){console.error('auto-merge',e.message);}},10*60*1000).unref();
+if(crawls)setInterval(async()=>{try{for(const item of await store.metas()){const id=item.id;if(locks.has(id)||!crawlSettings(item).autoMerge)continue;const p=await store.read(id);const m=await crawls.meta(id);if(!crawlStatus(m,crawlSettings(p),p.siteCrawl).unmerged)continue;await locked(id,()=>mergeCrawled(id)).catch(()=>{});}}catch(e){console.error('auto-merge',e.message);}},10*60*1000).unref();
 // Production baseline: what the current search does for real shoppers (works → must be kept, fails → must improve),
 // evaluated against the working rules. Every agent save is guarded against losing what is kept.
 function baselineView(p){
@@ -667,7 +780,7 @@ app.post('/api/projects/:id/client-profile',route(async(req,res)=>locked(req.par
 })));
 app.get('/api/projects/:id/performance',route(async(req,res)=>{const p=await store.read(req.params.id);res.json({profile:p.clientProfile||null,report:p.performanceReport||null});}));
 app.post('/api/projects/:id/performance/review',route(async(req,res)=>streamed(req,res,async(send,guard)=>{
- const p=await store.read(req.params.id);const report=await reviewSearchPerformance(p,{days:req.body?.days??30,planner:guard(app.locals.planner||askPlanner),search:guard(async query=>createStudioSearch(p,p.revisions.at(-1).profile)(query,8)),onEvent:guard(async e=>send(e))});await persist(p);return {report};
+ const p=await store.read(req.params.id);const report=await reviewSearchPerformance(p,{days:req.body?.days??30,planner:guard(app.locals.planner||askReport),search:guard(async query=>createStudioSearch(p,p.revisions.at(-1).profile)(query,8)),onEvent:guard(async e=>send(e))});await persist(p);return {report};
 })));
 app.post('/api/projects/:id/performance/:proposal/prepare',route(async(req,res)=>{
  const p=await store.read(req.params.id);res.json({message:proposalRequest(p,req.params.proposal)});
@@ -685,7 +798,7 @@ app.post('/api/projects/:id/processing/:plan/run',route(async(req,res)=>streamed
 // activated by the operator, then used by the tenant's crawl (a reseed builds the page list with its URL rule).
 app.get('/api/projects/:id/scraper',route(async(req,res)=>{const p=await store.read(req.params.id);res.json(p.scraper||{status:'none'});}));
 app.post('/api/projects/:id/scraper/build',route(async(req,res)=>streamed(req,res,async(send,guard)=>{
- const p=await store.read(req.params.id);if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS');
+ const p=await store.read(req.params.id);if(!hasSiteUrl(p)||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS');
  const fetchPage=app.locals.fetchPage||(async url=>{await new Promise(r=>setTimeout(r,1000));return getPage(url);});
  const urls=await sampleProductUrls(p,{fetchPage,count:8});
  const scraper=await buildScraper(p,{planner:guard(app.locals.planner||askPlanner),fetchPage:guard(fetchPage),samples:urls.slice(0,4),validation:urls.slice(4),onEvent:async e=>send(e)});await persist(p);return {scraper};
@@ -696,12 +809,12 @@ app.post('/api/projects/:id/scraper/:action(activate|deactivate)',route(async(re
 })));
 // Automatic check of real shopper queries (zero results, no clicks, top), optionally fixing findings. Streams NDJSON like /studio.
 app.post('/api/projects/:id/audit',route(async(req,res)=>locked(req.params.id,async()=>{
- const {fix=false,limit=12,fixLimit=5,source='signals'}=req.body||{};if(typeof fix!=='boolean'||!['signals','baseline'].includes(source))throw Error('בקשה לא תקינה');
+ const {fix=false,source='signals',limit=source==='week'?20:15,fixLimit=5,days=7}=req.body||{};if(typeof fix!=='boolean'||!['signals','baseline','week'].includes(source))throw Error('בקשה לא תקינה');
  const p=await store.read(req.params.id);if(!p.revisions.length||!p.productCards?.length)throw Error('ללקוח הזה עדיין אין קטלוג שמור');
  res.status(200).set({'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
  let closed=false;res.on('close',()=>{closed=true;});const send=event=>{if(!closed)res.write(JSON.stringify(event)+'\n');};const halt=stopOnClose(res);
  try{
-  const next=await auditSearches(p,{fix,limit,fixLimit,source,model:halt.guard(app.locals.studioAgent||askStudioAgent),judge:halt.guard(app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent),services:app.locals.studioServices,signals:app.locals.searchSignals,onEvent:async e=>send(e)});
+  const next=await auditSearches(p,{fix,limit,fixLimit,source,days,...(app.locals.weekSignals&&{week:app.locals.weekSignals}),model:halt.guard(app.locals.studioAgent||askStudioAgent),judge:halt.guard(app.locals.studioJudge||app.locals.studioAgent||askJudgeAgent),services:app.locals.studioServices,signals:app.locals.searchSignals,onEvent:async e=>send(e)});
   await persist(next);runtimes.clear();send({type:'done',project:await projectSummary(next)});
  }catch(e){send({type:'error',message:e.message});}
  res.end();
@@ -745,15 +858,56 @@ app.post('/api/projects/:id/learning',route(async(req,res)=>locked(req.params.id
 app.post('/api/projects/:id/rollback',route(async(req,res)=>locked(req.params.id,async()=>{
  const p=await store.read(req.params.id);const r=p.revisions.find(r=>r.number===req.body.revision);if(!r||p.revisions.length>=100)throw Error('גרסה לא תקינה');p.revisions.push({...r,number:p.revisions.length+1,createdAt:new Date().toISOString(),note:'חזרה לגרסה '+r.number});refreshDerived(p);await persist(p);runtimes.clear();res.json(summary(p));
 })));
-app.post('/api/projects/:id/search',route(async(req,res)=>{if(active>=2)return res.status(429).json({error:'המערכת עסוקה'});active++;try{const {runId,...searchRequest}=req.body;const result=await (await runtime(req.params.id,false,runId||null)).search(searchRequest);if(req.body.runId){result.metadata={...result.metadata,preview:true};result.message=['תצוגת בנייה חלקית — סיווגים ואימות קטלוג עדיין דורשים טיפול.',result.message].filter(Boolean).join(' ');}
- const p=await store.read(req.params.id);if(settingsOf(p).enabled&&typeof searchRequest.query==='string'){const oos=result.matches?.length?[]:outOfStockHits(p.productCards,searchRequest.query);result.concierge=decideTrigger(result,searchRequest.query,settingsOf(p),oos);if(oos.length)result.oos=oos;}
+app.post('/api/projects/:id/search',route(async(req,res)=>{if(active>=2)return res.status(429).json({error:'המערכת עסוקה'});active++;try{const {runId,conciergeClassified,...searchRequest}=req.body;const result=await (await runtime(req.params.id,false,runId||null)).search(searchRequest);if(req.body.runId){result.metadata={...result.metadata,preview:true};result.message=['תצוגת בנייה חלקית — סיווגים ואימות קטלוג עדיין דורשים טיפול.',result.message].filter(Boolean).join(' ');}
+ const p=await store.read(req.params.id);if(settingsOf(p).enabled&&typeof searchRequest.query==='string'){const oos=result.matches?.length?[]:outOfStockHits(p.productCards,searchRequest.query);
+  // A client that already ran the pre-search classifier gets literal results with no model call before the products.
+  // A merchant policy is asked again only at a result-based moment (empty, out of stock, non-literal), which the
+  // pre-search classifier could not see.
+  const model=app.locals.conciergeAgent||askConciergeAgent,moment=conciergeClassified===true?inspectTrigger(p,searchRequest.query,result):null;
+  const evaluated=conciergeClassified===true&&(!moment||!settingsOf(p).triggerPrompt)?{trigger:moment,decision:{source:'pre_search'}}:await evaluateConciergeTrigger(p,searchRequest.query,result,model);result.concierge=evaluated.trigger;result.conciergeDecision=evaluated.decision;if(oos.length)result.oos=oos;}
  res.json(result)}finally{active--}}));
-app.post('/api/projects/:id/concierge',route(async(req,res)=>{
- const p=await store.read(req.params.id);if(!settingsOf(p).enabled)throw Error('הקונסיירז׳ כבוי ללקוח הזה');
+// What the shopper sees while typing: the module's rule-driven, index-only suggestions (runtime.suggest).
+app.post('/api/projects/:id/suggest',route(async(req,res)=>{
+ const query=typeof req.body?.query==='string'?req.body.query.slice(0,300):'',t0=Date.now();
+ const r=await (await runtime(req.params.id,false,req.body?.runId||null)).suggest(query,{limit:12});
+ res.json({query:r.query,total:r.total,completed:r.completed||[],ranking:r.ranking||[],corrections:r.plan?.corrections||null,elapsedMs:Date.now()-t0,matches:r.matches.map(p=>({id:p.id,title:p.title,image:p.image,price:p.price,stockStatus:p.stockStatus,specifications:p.specifications?.author?{author:p.specifications.author}:undefined}))});
+}));
+app.post('/api/projects/:id/concierge/settings',route(async(req,res)=>locked(req.params.id,async()=>{
+ const p=await store.read(req.params.id);applyConciergeSettings(p,req.body||{});await persist(p);res.json(await projectSummary(p));
+})));
+app.post('/api/projects/:id/concierge/classify',route(async(req,res)=>{
+ const p=await store.read(req.params.id);res.json(await classifyConciergeQuery(p,req.body?.query,app.locals.conciergeAgent||askConciergeAgent));
+}));
+const conciergeInput=async req=>{
+ const p=await shopperProject(req.params.id);if(!settingsOf(p).enabled)throw Error('הקונסיירז׳ כבוי ללקוח הזה');
  if(!p.revisions.length||!p.productCards?.length)throw Error('נדרש קטלוג שמור');
- const {message,trigger,history}=req.body;if(history&&(!Array.isArray(history)||JSON.stringify(history).length>12000))throw Error('היסטוריה לא תקינה');
- const model=app.locals.conciergeAgent||askChatAgent;
- res.json(await conciergeTurn(p,{message,trigger,history},model));
+ const {message,trigger,history,conversationId}=req.body;if(history&&(!Array.isArray(history)||JSON.stringify(history).length>12000))throw Error('היסטוריה לא תקינה');
+ if(conversationId!==undefined&&!/^[a-f0-9-]{36}$/.test(String(conversationId)))throw Error('מזהה שיחה לא תקין');
+ return {p,turn:{message,trigger,history},conversationId:conversationId||randomUUID()};
+};
+// Every shopper turn is saved with its conversation, answered or failed; a failed save never fails the turn.
+const conciergeReply=async(p,turn,conversationId,options)=>{
+ const save=entry=>conciergeLog.append(p.id,{conversationId,message:turn.message,trigger:turn.trigger,...entry}).catch(e=>console.error('[concierge] conversation not saved:',e.message));
+ // The advisor searches through the project's loaded runtime (the one the studio search uses), not a new one per query.
+ const search=async query=>(await runtime(p.id)).search({query,limit:12});
+ try{const r=await conciergeTurn(p,turn,app.locals.conciergeAgent||askConciergeAgent,{search,...options});await save(r);return {...r,conversationId};}
+ catch(e){await save({error:e.message});throw e;}
+};
+app.get('/api/projects/:id/concierge/conversations',route(async(req,res)=>{await store.read(req.params.id);res.json(await conciergeLog.list(req.params.id));}));
+// The same turn as /concierge, sent as it happens: thinking, step, products, then done (or error).
+// link(project,card) rewrites the product cards on their way out (the demo mirror keeps their links inside itself).
+async function conciergeStream(req,res,link=null){
+ const {p,turn,conversationId}=await conciergeInput(req);
+ res.status(200).set({'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
+ let closed=false;res.on('close',()=>{closed=true;});const send=e=>{if(!closed)res.write(JSON.stringify(link&&e.products?{...e,products:e.products.map(c=>link(p,c))}:e)+'\n');};
+ try{send({type:'done',...await conciergeReply(p,turn,conversationId,{onEvent:send})});}
+ catch(e){send({type:'error',message:e.message});}
+ res.end();
+}
+app.post('/api/projects/:id/concierge/stream',route((req,res)=>conciergeStream(req,res)));
+app.post('/api/projects/:id/concierge',route(async(req,res)=>{
+ const {p,turn,conversationId}=await conciergeInput(req);
+ res.json(await conciergeReply(p,turn,conversationId));
 }));
 app.post('/api/projects/:id/provision',route(async(req,res)=>locked(req.params.id,async()=>{
  const p=await store.read(req.params.id);const result=await provision(p);p.provisioning=result;await persist(p);res.json(result);
@@ -773,6 +927,41 @@ app.post('/api/projects/:id/scrape',route(async(req,res)=>locked(req.params.id,a
  p.badgeScan=scan;refreshDerived(p);p.events.push({text:`נסרקו ${scan.pages} עמודים; זוהו ${scan.observations.reduce((n,o)=>n+o.badges.length,0)} באדג׳ים ב־${scan.observations.length} מוצרים. ${scan.errors.length} עמודים נכשלו.`,at:scan.scannedAt});
  await persist(p);runtimes.clear();res.json(summary(p));
 })));
+// Store labels (the theme's "2 ב100 ש"ח" / VIP strips): read from the storefront's listing pages onto the product cards,
+// published with the module edition and returned in /search `badges`; the plugin renders the text in the theme's markup.
+// The pages are fetched outside the project lock (a full scan takes a minute or two); only the result is applied under it.
+const labelScans=new Map();
+async function runLabelScan(id,{onPage}={}){
+ if(labelScans.has(id))throw Error('סריקת תוויות כבר רצה ללקוח הזה');
+ const job=(async()=>{const p=await store.read(id);if(!hasSiteUrl(p)||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS');
+  const scan=await scanStoreLabels(p,{fetchSource:app.locals.fetchLabelPage,onPage});
+  return locked(id,async()=>{const fresh=await store.read(id),summary=applyLabelScan(fresh,scan);
+   fresh.events.push({text:`סריקת תוויות: ${summary.pages} עמודים, ${summary.labelled} מוצרים עם תווית (${Object.keys(summary.counts).length} סוגים)${summary.complete?'':' — סריקה חלקית, מוצרים שלא נראו נשארו כמו שהיו'}. נוספו ${summary.changes.added}, הוסרו ${summary.changes.removed}, השתנו ${summary.changes.changed}.`,at:summary.scannedAt});
+   await persist(fresh);runtimes.clear();return summary;});})();
+ labelScans.set(id,job);try{return await job;}finally{labelScans.delete(id);}
+}
+const labelSummary=p=>({scan:p.labelScan||null,auto:p.labelScanAuto||null,config:labelScanConfig(p),running:labelScans.has(p.id),
+ sample:(p.productCards||[]).filter(c=>labelsOf(c).length).slice(0,12).map(c=>({id:c.id,title:c.title,url:c.url,labels:labelsOf(c)}))});
+app.get('/api/projects/:id/labels',route(async(req,res)=>res.json(labelSummary(await store.read(req.params.id)))));
+app.post('/api/projects/:id/labels/scan',route(async(req,res)=>{
+ await store.read(req.params.id);
+ res.status(200).set({'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
+ let closed=false;res.on('close',()=>{closed=true;});const send=e=>{if(!closed)res.write(JSON.stringify(e)+'\n');};
+ try{const scan=await runLabelScan(req.params.id,{onPage:e=>send({type:'progress',...e})});send({type:'done',scan});}catch(e){send({type:'error',message:e.message});}res.end();
+}));
+// auto: rescan every N hours while this studio server runs (so a changed label reaches the shopper without anyone asking).
+app.post('/api/projects/:id/labels/settings',route(async(req,res)=>locked(req.params.id,async()=>{
+ const p=await store.read(req.params.id),b=req.body||{};
+ if(b.auto!==undefined){const hours=Number(b.everyHours??p.labelScanAuto?.everyHours??6);if(b.auto&&!(hours>=1&&hours<=168))throw Error('תדירות בין שעה לשבוע');p.labelScanAuto=b.auto?{everyHours:Math.round(hours)}:null;}
+ const cfg={...(p.labelScanConfig||{})};for(const k of ['listingPath','pagePattern','cardSelector','labelSelector','maxPages'])if(b[k]!==undefined)cfg[k]=b[k];
+ p.labelScanConfig=cfg;labelScanConfig(p);await persist(p);res.json(labelSummary(p));})));
+let labelling=false;
+async function labelTick(){if(labelling)return;labelling=true;try{
+ for(const item of await store.metas()){const every=item.labels?.every;if(!every||labelScans.has(item.id)||locks.has(item.id))continue;
+  if(item.labels.at&&Date.now()-Date.parse(item.labels.at)<every*3600000)continue;
+  await runLabelScan(item.id).catch(e=>console.error('[labels]',item.id,e.message));}
+}finally{labelling=false;}}
+if(!app.locals.noLabelTimer)setInterval(()=>labelTick().catch(console.error),10*60000).unref();
 app.get('/api/projects/:id/plugin',route(async(req,res)=>res.json(pluginSummary(await store.read(req.params.id)))));
 app.get('/api/projects/:id/plugin/file',route(async(req,res)=>res.json(readPluginFile(await store.read(req.params.id),req.query.path))));
 app.post('/api/projects/:id/plugin/import',route(async(req,res)=>locked(req.params.id,async()=>{
@@ -814,7 +1003,7 @@ async function takeoverFetch(url){
 const applyTakeoverSettings=applySettings;
 app.get('/api/projects/:id/takeover',route(async(req,res)=>res.json(takeoverView(await store.read(req.params.id)))));
 app.post('/api/projects/:id/takeover/detect',route(async(req,res)=>streamed(req,res,async(send,guard)=>{
- const p=await store.read(req.params.id);if(!p.url)throw Error('לפרויקט אין כתובת אתר');
+ const p=await store.read(req.params.id);if(!hasSiteUrl(p))throw Error('לפרויקט אין כתובת אתר');
  const result=await detectTakeover({url:p.url,products:p.productCards||[],fetchPage:guard(app.locals.takeoverFetch||takeoverFetch),onEvent:guard(async e=>send(e.type==='step'?{type:'note',text:`${e.ok?'✓':'✗'} ${e.name}: ${e.detail}`}:e))});
  // A fresh detection becomes the new base; the operator's settings are carried over and re-applied.
  const next={...result,detectedConfig:result.siteConfig,settings:p.takeover?.settings,published:p.takeover?.published||null,shopifyApp:p.takeover?.shopifyApp||null};
@@ -861,9 +1050,10 @@ app.get('/api/projects/:id/takeover/rollout',route(async(req,res)=>res.json(awai
 // What the split did: visitors, searchers, clicks, carts and purchases per group, from the store's own events.
 app.get('/api/projects/:id/takeover/rollout/report',route(async(req,res)=>res.json(await (app.locals.readRolloutReport||readRolloutReport)(await store.read(req.params.id),{days:req.query.days===undefined?undefined:Number(req.query.days)}))));
 app.post('/api/projects/:id/takeover/rollout',route(async(req,res)=>locked(req.params.id,async()=>{
- const p=await store.read(req.params.id),percent=req.body?.percent===null?null:Number(req.body?.percent);
- const result=await (app.locals.publishRollout||publishRollout)(p,percent,{backups:takeoverBackups()});
- p.events.push({type:'takeover-rollout',at:result.at,text:percent===null?'חלוקת A/B הוסרה מהפרודקשן':`Semantix ל־${percent}% מהגולשים (פרודקשן)`});await persist(p);
+ const p=await store.read(req.params.id),percent=req.body?.percent===null?null:Number(req.body?.percent),pins=req.body?.pins;
+ const result=await (app.locals.publishRollout||publishRollout)(p,percent,{backups:takeoverBackups(),pins});
+ const pinned=Object.keys(result.pins||{}).length;
+ p.events.push({type:'takeover-rollout',at:result.at,text:percent===null?'חלוקת A/B הוסרה מהפרודקשן':`Semantix ל־${percent}% מהגולשים${pinned?` + ${pinned} גולשים קבועים`:''} (פרודקשן)`});await persist(p);
  res.json({...result,backup:result.backup.split('/').pop()});
 })));
 // The client's own Shopify app in the local apps folder: created on the first publish, a new version on every one.
@@ -917,6 +1107,18 @@ app.post('/api/projects/:id/dashboard-export',route(async(req,res)=>locked(req.p
 })));
 // A store onboarded from its URL becomes a dashboard client: users.users + <dbName>.products in the existing schema.
 app.get('/api/projects/:id/dashboard-connect',route(async(req,res)=>{const p=await store.read(req.params.id);res.json({connected:p.existingClient?{username:p.existingClient.username,dbName:p.existingClient.dbName,createdByStudio:!!p.existingClient.createdByStudio}:null,suggestion:p.existingClient?null:suggestNames(p)});}));
+// Existing clients: the studio catalog is brought to what production serves (live price/stock/visibility, new and removed
+// products from the store's Mongo — existing-client applyLiveRows). Saved without persist: the refresh changes no
+// approved data, so it never publishes an edition to production by itself. Runs only on request (POST live-fields):
+// searches no longer start it, since the rebuilt index and dropped vector index made the next search rebuild the runtime.
+const liveRefreshing=new Set();
+async function syncLiveFields(id){
+ if(liveRefreshing.has(id))return null;liveRefreshing.add(id);
+ try{const p=await store.read(id);if(!p.existingClient?.dbName)throw Error('נדרש לקוח קיים');const r=await (app.locals.refreshLiveFields||refreshLiveFields)(p);
+  p.events.push({text:`הקטלוג סונכרן עם הפרודקשן: ${r.stockChanged} שינויי מלאי, ${r.priceChanged} שינויי מחיר, ${r.added} מוצרים חדשים, ${r.gone} הוסרו`,at:r.at});p.events=p.events.slice(-100);p.updatedAt=new Date().toISOString();await store.save(p);return r;}
+ finally{liveRefreshing.delete(id);}
+}
+app.post('/api/projects/:id/live-fields',route(async(req,res)=>{const r=await syncLiveFields(req.params.id);if(!r)return res.status(409).json({error:'סנכרון כבר רץ'});res.json(r);}));
 app.post('/api/projects/:id/dashboard-connect',route(async(req,res)=>locked(req.params.id,async()=>{
  const p=await store.read(req.params.id),r=await (app.locals.connectToDashboard||connectToDashboard)(p,{username:req.body?.username,dbName:req.body?.dbName,email:req.body?.email||null});
  const at=new Date().toISOString();p.existingClient={username:r.username,dbName:r.dbName,collection:'products',loadedAt:at,connectedAt:at,createdByStudio:true};

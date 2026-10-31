@@ -4,13 +4,17 @@ import {hash} from './catalog.mjs';
 const number=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
 // Queries group case- and space-insensitively ("Kindle"/"kindle"); the most searched spelling is shown.
 const queryKey=q=>typeof q==='string'?q.trim().toLowerCase().replace(/\s+/g,' '):'';
+const MIN_RATED_SEARCHES=5;
 export function summarizeQueries(rows,carts=[],clicks=[]){
  const groups=new Map(),forms=new Map();
  const entry=q=>{const key=queryKey(q);if(!key)return null;if(!groups.has(key))groups.set(key,{query:q.trim(),searches:0,zeroResults:0,measuredResults:0,carts:0,clicks:0});return groups.get(key)};
  for(const r of rows){const g=entry(r.query);if(!g)continue;g.searches++;const f=forms.get(g)||new Map();f.set(r.query.trim(),(f.get(r.query.trim())||0)+1);forms.set(g,f);const count=number(r.resultCount)??number(r.resultsCount)??number(r.totalResults)??number(r.delivered)??(Array.isArray(r.results)?r.results.length:Array.isArray(r.deliveredProducts)?r.deliveredProducts.length:null);if(count!==null){g.measuredResults++;if(count===0)g.zeroResults++;}}
  for(const r of carts){const g=entry(r.query??r.search_query);if(g)g.carts++;}for(const r of clicks){const g=entry(r.query??r.search_query);if(g)g.clicks++;}
  for(const [g,f] of forms)g.query=[...f].sort((a,b)=>b[1]-a[1])[0][0];
- const all=[...groups.values()];return {sampledSearches:rows.length,measuredSearches:all.reduce((s,g)=>s+g.measuredResults,0),top:all.filter(g=>g.searches).sort((a,b)=>b.searches-a.searches).slice(0,30),failed:all.filter(g=>g.zeroResults).sort((a,b)=>b.zeroResults-a.zeroResults).slice(0,30),converting:all.filter(g=>g.carts).sort((a,b)=>b.carts-a.carts).slice(0,30),clicked:all.filter(g=>g.clicks).sort((a,b)=>b.clicks-a.clicks).slice(0,30),clickTracking:clicks.length>0,noClicks:clicks.length?all.filter(g=>g.searches>=3&&!g.clicks&&!g.carts).sort((a,b)=>b.searches-a.searches).slice(0,30):[],conversionMeaning:'הוספה לסל עם שאילתה מפורשת — לא רכישה',scope:'עד 10,000 אירועים אחרונים בכל מקור; אין ייחוס לפי משתמש או סשן'};
+ // Conversion = add-to-cart rate of a query; rated only for queries searched often enough to mean something, and only
+ // when cart events carry queries at all (otherwise every query would look like it never converts).
+ const all=[...groups.values()],rated=carts.length?all.filter(g=>g.searches>=MIN_RATED_SEARCHES).map(g=>({...g,cartRate:Math.round(g.carts/g.searches*1000)/1000})):[];
+ return {sampledSearches:rows.length,cartTracking:carts.length>0,bestConverting:rated.filter(g=>g.carts).sort((a,b)=>b.cartRate-a.cartRate||b.searches-a.searches).slice(0,30),worstConverting:[...rated].sort((a,b)=>a.cartRate-b.cartRate||b.searches-a.searches).slice(0,30),measuredSearches:all.reduce((s,g)=>s+g.measuredResults,0),top:all.filter(g=>g.searches).sort((a,b)=>b.searches-a.searches).slice(0,30),failed:all.filter(g=>g.zeroResults).sort((a,b)=>b.zeroResults-a.zeroResults).slice(0,30),converting:all.filter(g=>g.carts).sort((a,b)=>b.carts-a.carts).slice(0,30),clicked:all.filter(g=>g.clicks).sort((a,b)=>b.clicks-a.clicks).slice(0,30),clickTracking:clicks.length>0,noClicks:clicks.length?all.filter(g=>g.searches>=3&&!g.clicks&&!g.carts).sort((a,b)=>b.searches-a.searches).slice(0,30):[],conversionMeaning:'הוספה לסל עם שאילתה מפורשת — לא רכישה',scope:'עד 10,000 אירועים אחרונים בכל מקור; אין ייחוס לפי משתמש או סשן'};
 }
 export async function readSearchSignals(p){
  if(!p.existingClient)throw Error('המסלול מיועד ללקוח קיים');const uri=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;if(!uri)throw Error('חסר חיבור למסד הנתונים');
@@ -26,7 +30,7 @@ export async function readSearchSignals(p){
 export function catalogContext(p){
  const cards=p.productCards||[],counts=new Map(),fields=new Map();let descriptions=0;
  for(const c of cards){if(c.description)descriptions++;for(const v of [...(c.categories||[]),...(c.tags||[])])counts.set(v,(counts.get(v)||0)+1);for(const k of Object.keys(c.specifications||{}))fields.set(k,(fields.get(k)||0)+1);}
- const sample=cards.filter((_,i)=>i%Math.max(1,Math.floor(cards.length/80))===0).slice(0,80).map(c=>({id:c.id,title:c.title,description:(c.description||'').slice(0,600),categories:c.categories,tags:c.tags,specifications:c.specifications}));
+ const sample=cards.filter((_,i)=>i%Math.max(1,Math.floor(cards.length/80))===0).slice(0,80).map(c=>({id:c.id,title:c.title,description:String(c.description||'').slice(0,600),categories:c.categories,tags:c.tags,specifications:c.specifications}));
  return {total:cards.length,withDescription:descriptions,labels:[...counts].sort((a,b)=>b[1]-a[1]).slice(0,200),fields:[...fields],sample,sampling:'סיכום של כל הכרטיסים ועד 80 דוגמאות מפוזרות; המודל אינו קורא כל תיאור במלואו',storeContext:p.storeContext,profile:p.revisions.at(-1)?.profile};
 }
 export async function analyzeExisting(p,agent,signals=readSearchSignals){

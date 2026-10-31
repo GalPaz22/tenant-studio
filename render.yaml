@@ -11,9 +11,17 @@ services:
         value: "22"
       - key: ALLOW_REMOTE
         value: "true"
+      - key: STUDIO_CUSTOMER_API_TOKEN
+        sync: false
+      # Optional JSON mapping of store dbName to its existing project UUID.
+      - key: STUDIO_CUSTOMER_PROJECTS
+        value: '{}'
       - key: MONGODB_URI
         sync: false
       - key: STUDIO_DASHBOARD_MONGODB_URI
+        sync: false
+      # Proxy/VPN exit for every scraper (core/egress.mjs); empty = direct.
+      - key: STUDIO_SCRAPE_PROXY
         sync: false
       # Client Shopify apps open the studio here (install + daily product feed, core/shopify-feed.mjs).
       - key: STUDIO_PUBLIC_URL
@@ -35,4 +43,6 @@ services:
         sync: false
       - key: STUDIO_CRAWL_DB
         value: semantix_studio
-
+      # Proxy/VPN exit for every scraper (core/egress.mjs); empty = direct.
+      - key: STUDIO_SCRAPE_PROXY
+        sync: false

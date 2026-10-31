@@ -23,11 +23,11 @@ test('every event is counted in its visitor group, and conversion is measured am
    {event_type:'checkout_completed',session_id:'b2',order_id:'103',total_price:10,financial_status:'refunded',timestamp:T},
    {event_type:'checkout_completed',session_id:null,order_id:'104',total_price:999,timestamp:T}]};
  const r=summarizeRollout(data,opts);
- assert.deepEqual([r.semantix.visitors,r.native.visitors],[5,5],'the latest exposure decides; a cart event fills in a visitor with none');
+ assert.deepEqual([r.semantix.visitors,r.native.visitors],[4,5],'a visitor seen in both groups is out; a cart event fills in a visitor with none');assert.equal(r.quality.conflicts,1);
  assert.deepEqual([r.semantix.searchers,r.semantix.searches,r.native.searchers,r.native.searches],[3,4,2,2]);
  assert.deepEqual([r.semantix.searchersWhoClicked,r.semantix.searchersWhoCarted,r.semantix.searchersWhoBought],[2,1,1]);
  assert.deepEqual([r.semantix.orders,r.semantix.revenue,r.semantix.buyers],[2,250,2]);
- assert.equal(r.semantix.searchConversion,1/3);assert.equal(r.semantix.conversion,2/5);assert.equal(r.semantix.checkoutStarters,1);
+ assert.equal(r.semantix.searchConversion,1/3);assert.equal(r.semantix.conversion,2/4);assert.equal(r.semantix.checkoutStarters,1);
  assert.deepEqual([r.native.orders,r.native.revenue,r.native.searchersWhoBought,r.native.searchConversion],[1,80,0,0]);
  assert.deepEqual(r.unknown,{searches:2,clicks:0,carts:0,orders:1,revenue:999,noSession:1});
  assert.equal(r.currency,'ILS');
@@ -51,7 +51,7 @@ test('the report reads the store database, and a collection that is missing does
  await assert.rejects(readRolloutReport({},{},{client}),/מחובר/);
 });
 
-test('purchases are reported from checkout: the Shopify pixel and the WooCommerce order page',async()=>{
+test('purchases are reported from checkout: the Shopify pixel and the WooCommerce server',async()=>{
  const engine='(function(){const S=window.SemantixSettings||{};})();',project={id:'p',url:'https://www.shop.example/',takeover:{siteConfig:{platform:'shopify',features:{fullReplace:true}}}};
  const {files}=buildShopifyTakeover(project,{apiBase:'https://api.example.com',engine});
  assert.match(files['extensions/semantix-pixel/shopify.extension.toml'],/type = "web_pixel_extension"[\s\S]*runtime_context = "strict"[\s\S]*\[settings\.fields\.apiKey\]/);
@@ -74,6 +74,26 @@ test('purchases are reported from checkout: the Shopify pixel and the WooCommerc
  // The order is countable by the report as it is sent.
  const r=summarizeRollout({exposures:[ex('vis-1','semantix')],queries:[{query:'כוס קפה',session_id:'vis-1',timestamp:T}],checkouts:[sent[1][2]]},opts);
  assert.equal(r.semantix.searchConversion,1);assert.equal(r.semantix.revenue,120.5);
- const php=buildWooTakeover({...project,takeover:{siteConfig:{platform:'woocommerce',features:{fullReplace:true}}}},{apiBase:'https://api.example.com',apiKey:'site_key_12345678',engine}).files['semantix-search/semantix-search.php'];
+ const woo=buildWooTakeover({...project,takeover:{siteConfig:{platform:'woocommerce',features:{fullReplace:true}}}},{apiBase:'https://api.example.com',apiKey:'site_key_12345678',engine}).files;
+ const php=woo['semantix-search/commerce.php'];
  assert.match(php,/add_action\('woocommerce_thankyou'/);assert.match(php,/_semantix_reported/);assert.match(php,/'event_type' => 'checkout_completed'/);assert.match(php,/semantix_ab_current/);
+});
+
+test('bots and visitors seen in both groups are out; fallback events assign nobody',()=>{
+ const bot={user_agent:'Mozilla/5.0 (compatible; Googlebot/2.1)'};
+ const r=summarizeRollout({exposures:[{...ex('g','native'),...bot},ex('both','native','2026-10-02T00:00:00Z'),ex('both','semantix','2026-10-03T00:00:00Z'),ex('f','native:fallback'),ex('a','semantix'),ex('b','native')]},opts);
+ assert.equal(r.semantix.visitors,1);assert.equal(r.native.visitors,1);assert.equal(r.quality.conflicts,1);assert.equal(r.quality.bots,1);
+});
+test('the search id follows a search to a confirmed cart and an order',()=>{
+ const r=summarizeRollout({exposures:[ex('a','semantix')],queries:[{query:'כוס',session_id:'a',search_id:'s1',timestamp:T}],
+  confirmed:[{event_type:'add_to_cart_confirmed',session_id:'a',search_id:'s1',timestamp:T},{event_type:'add_to_cart_confirmed',session_id:'a',search_id:'other',timestamp:T}],
+  checkouts:[{event_type:'checkout_completed',session_id:'a',search_id:'s1',order_id:'9',total_price:50,timestamp:T}]},opts);
+ assert.equal(r.semantix.confirmedCarts,2);assert.equal(r.semantix.attributedCarts,1);assert.equal(r.semantix.attributedOrders,1);assert.equal(r.semantix.attributedRevenue,50);assert.equal(r.semantix.searchersWhoConfirmedCart,1);
+});
+test('quality says when a difference cannot be attributed yet',()=>{
+ const many=n=>Array.from({length:n},(_,i)=>i);
+ let r=summarizeRollout({exposures:[...many(2433).map(i=>ex('s'+i,'semantix')),...many(32806).map(i=>ex('n'+i,'native'))]},{...opts,expectedShare:0.1});
+ assert.equal(r.quality.attributable,false);assert.deepEqual(r.quality.reasons,['no-verified-orders','split-mismatch']);assert.ok(r.quality.split.z<-3);
+ r=summarizeRollout({exposures:[...many(100).map(i=>ex('s'+i,'semantix')),...many(900).map(i=>ex('n'+i,'native'))],checkouts:[{event_type:'checkout_completed',session_id:'s1',order_id:'1',total_price:10,timestamp:T}]},{...opts,expectedShare:0.1});
+ assert.equal(r.quality.attributable,true);
 });

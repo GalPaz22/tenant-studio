@@ -70,6 +70,35 @@ test('AI small-batch repair retains successful classifications and verifies the 
  finishRepair(run);assert.equal(run.status,'ready');assert.equal(run.repair.status,'resolved');assert.deepEqual(classified,['1','2','3','4','5']);assert.equal(run.metrics.tagDecisions.failed,undefined);
 }finally{await rm(root,{recursive:true,force:true});}});
 
+test('skipped enrichment and tagging still build a ready catalog without model calls for them',async()=>{const root=await mkdtemp(tmpdir()+'/core-skip-');try{
+  const repo=createRunStore(root),p=project(),run=newBuild(p,validateBuildOptions({research:false,scanPages:false,skipStages:['enrich','tags']},p.platform));await repo.save(run);const stages=[];
+  const result=await executeBuild(p,run,repo,{fetchSource,agent,model:async args=>{stages.push(args.stage);return model(args);}});
+  assert.equal(result.run.status,'ready',JSON.stringify(result.run.errors));assert.deepEqual(stages,[]);
+  assert.deepEqual(result.run.stages.filter(s=>s.status==='skipped').map(s=>s.key),['enrich','tags']);
+  assert.equal(result.bundle.productCards.length,37);assert.ok(result.bundle.productCards.every(c=>c.enrichmentStatus==='skipped'));
+  assert.deepEqual(result.bundle.tagAssignments['מסך מרובע'].matchedIds,[]);assert.ok(result.run.warnings.some(w=>w.includes('העשרת מוצרים')));
+  assert.throws(()=>validateBuildOptions({skipStages:['collect']}),/ניתן לדלג/);
+}finally{await rm(root,{recursive:true,force:true});}});
+
+test('a skip requested mid-stage stops enrichment and keeps the products already enriched',async()=>{const root=await mkdtemp(tmpdir()+'/core-skip-live-');try{
+  const repo=createRunStore(root),p=project(),run=newBuild(p,validateBuildOptions({research:false,merchantFacts:false},p.platform));await repo.save(run);let calls=0;
+  const pages=async(url,...rest)=>{if(!new URL(url).pathname.startsWith('/product/'))return fetchSource(url,...rest);if(++calls===3)await repo.control(run.id,{action:'run',skip:['enrich']});return '<main>Watch</main>';};
+  const result=await executeBuild(p,run,repo,{fetchSource:pages,agent,model});
+  assert.equal(result.run.status,'ready',JSON.stringify(result.run.errors));assert.equal(result.run.stages.find(s=>s.key==='enrich').status,'skipped');
+  assert.ok(calls<10);assert.ok(result.run.options.skipStages.includes('enrich'));
+  const cards=result.bundle.productCards;assert.ok(cards.some(c=>c.enrichmentStatus==='skipped'));assert.ok(cards.some(c=>c.enrichmentStatus!=='skipped'));
+  assert.equal(result.run.stages.find(s=>s.key==='tags').status,'completed');
+}finally{await rm(root,{recursive:true,force:true});}});
+
+test('skipping enrichment on a rebuild keeps the previous build enrichment and tags',async()=>{const root=await mkdtemp(tmpdir()+'/core-skip-rebuild-');try{
+  const repo=createRunStore(root),p=project(),first=newBuild(p,validateBuildOptions({research:false,scanPages:false},p.platform));await repo.save(first);const initial=await executeBuild(p,first,repo,{fetchSource,agent,model});
+  p.latestBuildId=first.id;p.revisions=[{number:1,profile}];
+  const second=newBuild(p,validateBuildOptions({research:false,scanPages:false,skipStages:['enrich','tags']},p.platform));await repo.save(second);
+  const result=await executeBuild(p,second,repo,{fetchSource,agent,model:async()=>{throw Error('no model calls expected')}});
+  assert.equal(result.run.status,'ready',JSON.stringify(result.run.errors));assert.equal(result.run.metrics.reusedProducts,37);
+  assert.ok(result.bundle.productCards.every(c=>c.extractedFacts?.length));assert.equal(result.bundle.tagAssignments['מסך מרובע'].matchedIds.length,initial.bundle.tagAssignments['מסך מרובע'].matchedIds.length);
+}finally{await rm(root,{recursive:true,force:true});}});
+
 test('JSON-LD availability is read with or without the schema.org prefix (Magento emits bare "InStock")',()=>{
   const at=availability=>normalizeRecord({'@type':'Product',name:'תרמיל',sku:'A1',offers:{price:'10',availability}},'magento','https://example.com','https://example.com/a1').stockStatus;
   assert.equal(at('InStock'),'instock');assert.equal(at('https://schema.org/InStock'),'instock');assert.equal(at('http://schema.org/OutOfStock'),'outofstock');assert.equal(at('OutOfStock'),'outofstock');assert.equal(at(''),'unknown');

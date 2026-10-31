@@ -1,6 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {patchTakeoverEngine} from './takeover-engine.mjs';
 
 // Preview of a full search takeover inside the demo mirror: the real semantix-cdn loader and engine run on the mirrored
 // store, but their API is the studio (the project's current search revision), so nothing reaches production. Tracking
@@ -16,8 +17,9 @@ export function engineDir(){
 }
 export async function engineSource(name){
  const file=ENGINE_FILES[name];if(!file)return null;
- const dir=engineDir();if(dir)return {code:await readFile(resolve(dir,file),'utf8'),from:'local'};
- const r=await fetch(`${CDN}/${file}`);if(!r.ok)throw Error(`CDN ${r.status}`);return {code:await r.text(),from:'cdn'};
+ const fix=code=>name==='engine.js'?patchTakeoverEngine(code):code;
+ const dir=engineDir();if(dir)return {code:fix(await readFile(resolve(dir,file),'utf8')),from:'local'};
+ const r=await fetch(`${CDN}/${file}`);if(!r.ok)throw Error(`CDN ${r.status}`);return {code:fix(await r.text()),from:'cdn'};
 }
 
 export function engineTag(project){
@@ -47,7 +49,7 @@ export function previewConfig(takeover){
 // Studio search results → the engine's product shape (dashboard-server /search).
 export function engineProducts(matches,productUrl){
  return (matches||[]).map(p=>({id:p.id,name:p.title,url:productUrl(p.url),image:p.image,price:p.price,regularPrice:p.regularPrice,
-  onSale:Number.isFinite(p.regularPrice)&&Number.isFinite(p.price)&&p.regularPrice>p.price,stockStatus:p.stockStatus,author:p.specifications?.author||'',sku:p.sku||''}));
+  onSale:Number.isFinite(p.regularPrice)&&Number.isFinite(p.price)&&p.regularPrice>p.price,stockStatus:p.stockStatus,author:p.specifications?.author||'',sku:p.sku||'',...(p.seriesFirst&&{seriesFirst:true})}));
 }
 // Studio search results → dashboard-server GET /autocomplete rows.
 export const engineSuggestions=(matches,productUrl)=>(matches||[]).map(p=>({suggestion:p.title,source:'products',id:p.id,url:productUrl(p.url),image:p.image,price:p.price}));

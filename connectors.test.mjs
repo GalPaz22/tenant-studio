@@ -24,6 +24,13 @@ test('sitemap crawler follows nested maps, attributes products and marks a faile
  if(url.endsWith('/b'))throw Error('Source HTTP 500');return '<script type="application/ld+json">{"@type":"Product","sku":"a","name":"Watch"}</script>';
  },asset:async(k,v)=>assets.push(v),checkpoint:async()=>{},control:async()=>{},report:async()=>{}});assert.equal(result.count,1);assert.equal(result.complete,false);assert.equal(result.errors.length,1);assert.equal(assets[0].rows[0].sku,'a');});
 
+test('sitemapPasses keeps the union of a sitemap that differs between load-balanced backends',async()=>{const state={};let reads=0;
+ await collectCatalog({url:'https://example.com/',platform:'custom'},{sourceType:'sitemap',sitemapUrl:'https://example.com/sitemap.xml',sitemapPasses:3},state,{fetchSource:async url=>{
+ if(url.endsWith('/sitemap.xml'))return ++reads%2?'<urlset><url><loc>https://example.com/a</loc></url></urlset>':'<urlset><url><loc>https://example.com/b</loc></url></urlset>';
+ return '<script type="application/ld+json">{"@type":"Product","sku":"x","name":"Watch"}</script>';
+ },asset:async()=>{},checkpoint:async()=>{},control:async()=>{},report:async()=>{}});assert.equal(reads,3);assert.deepEqual(state.urls.sort(),['https://example.com/a','https://example.com/b']);
+ assert.equal(validateBuildOptions({sourceType:'sitemap',sitemapUrl:'https://example.com/sitemap.xml'}).sitemapPasses,1);assert.throws(()=>validateBuildOptions({sourceType:'sitemap',sitemapUrl:'https://example.com/sitemap.xml',sitemapPasses:31}));});
+
 test('feed CSV handles quoted commas/newlines, rejects malformed variant fields, and sync requires a valid interval',()=>{
  const rows=parseCsv('id,name,description\n1,"Watch, A","Line 1\nLine 2"\n');assert.equal(rows[0].name,'Watch, A');assert.equal(rows[0].description,'Line 1\nLine 2');
  assert.throws(()=>normalizeRecord({id:'1',name:'A',url:'https://example.com/a',variants:'not JSON'},'custom','https://example.com','https://example.com/feed'));

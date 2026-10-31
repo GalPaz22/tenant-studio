@@ -1,5 +1,6 @@
 import https from 'node:https';
 import {lookup} from 'node:dns/promises';
+import {scrapeAgent} from './core/egress.mjs';
 export function publicAddress(address) {
  if(address.includes(':'))return false; // IPv4-only fetch boundary for this local release.
  const [a,b]=address.split('.').map(Number);
@@ -14,7 +15,7 @@ export async function fetchPublic(input, redirects=0,options={}) {
  const answers=await lookup(url.hostname,{all:true,family:4});
  if(!answers.length||answers.some(x=>!publicAddress(x.address)))throw Error('כתובת רשת פנימית אינה מותרת');
  const {status,headers,body}=await new Promise((resolve,reject)=>{
-  const req=https.request(url,{method:options.method||'GET',headers:{'User-Agent':'Semantix-Tenant-Studio/1.0',...(options.headers||{})},lookup:(_h,options,cb)=>options.all?cb(null,[{address:answers[0].address,family:4}]):cb(null,answers[0].address,4)},res=>{
+  const req=https.request(url,{agent:scrapeAgent(),method:options.method||'GET',headers:{'User-Agent':'Semantix-Tenant-Studio/1.0',...(options.headers||{})},lookup:(_h,options,cb)=>options.all?cb(null,[{address:answers[0].address,family:4}]):cb(null,answers[0].address,4)},res=>{
    let size=0;const chunks=[];
    res.on('data',c=>{size+=c.length;if(size>maxBytes)req.destroy(Error(maxBytes===3*1024*1024?'Source exceeds 3 MB':'Source exceeds configured feed limit'));else chunks.push(c)});
    res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:Buffer.concat(chunks).toString()}));res.on('error',reject);

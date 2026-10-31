@@ -3,11 +3,64 @@ import { createHash } from 'node:crypto';
 // Tenant stock policy (pipeline.outOfStock): "hide" (default) shows only in-stock products; "last" also shows out-of-stock
 // ones after all in-stock results; "show" shows them in their natural place. Hidden products are never shown.
 export const stockPolicy=client=>['last','show'].includes(client?.pipeline?.outOfStock)?client.pipeline.outOfStock:'hide';
-export const sellable=(p,client)=>!!p&&!p.hidden&&(p.stockStatus==='instock'||stockPolicy(client)!=='hide');
-export const normalize = value => String(value ?? '').normalize('NFKC').toLowerCase()
-  .normalize('NFD').replace(/\p{M}/gu,'').replace(/[®™]/g,'')
+// An out-of-stock product without a price is not shown under any policy: the store no longer sells it.
+export const sellable=(p,client)=>!!p&&!p.hidden&&(p.stockStatus==='instock'||(stockPolicy(client)!=='hide'&&Number(p.price)>0));
+// Order for the "last" policy: out-of-stock products follow every in-stock one, keeping the order inside each group —
+// except a product whose title is exactly what the shopper typed: exact titles lead (in-stock ones first), so a short
+// title ("הסערה") is not buried behind dozens of in-stock books that merely contain the word. A title written
+// "name / author" counts by its name too.
+// The shopper typed an author's name: every query word is a word of one of the product's authors (any order, so
+// "נבון חיים" too). A one-word query must be the whole name, so "עמנואל" does not lift every author called Emanuel.
+const authorsOf=p=>[p.specifications?.author,p.specifications?.['מחבר'],p.author].filter(v=>typeof v==='string'&&v).flatMap(v=>v.split(/[,;/|]/));
+export function authorMatch(p,query){
+ const q=normalize(query).split(' ').filter(Boolean);if(!q.length)return false;
+ return authorsOf(p).some(a=>{const w=normalize(a).split(' ').filter(Boolean);return q.length>1?q.every(t=>w.includes(t)):w.length===1&&w[0]===q[0];});
+}
+export function stockLast(matches,query){
+ const q=normalize(query),inStock=p=>p.stockStatus==='instock';
+ // A book by the author the shopper named leads like an exact title, sold-out ones after the in-stock ones.
+ const exact=p=>{const t=String(p.title||p.name||'');return !!q&&(normalize(t)===q||normalize(t.split(' / ')[0])===q||authorMatch(p,q));};
+ if(!matches.some(p=>!inStock(p)))return matches;
+ const lead=matches.filter(exact),rest=matches.filter(p=>!exact(p));
+ return [...lead.filter(inStock),...lead.filter(p=>!inStock(p)),...rest.filter(inStock),...rest.filter(p=>!inStock(p))];
+}
+// Rows the store has retired (a dead product page, not "temporarily missing"), so they are imported as hidden:
+// - a row whose product page answered 404/410 when last checked (pageCheck, written by scripts/page-check.mjs);
+// - out of stock with no price, or — when the catalog's syncs stamp lastSeenAt on most rows — out of stock and not seen
+//   in the latest sync (older than the newest stamp by more than graceMs);
+// - any row, even "instock", that no sync ever stamped in a tracked catalog, unless its page answered 200: leftovers of
+//   older feeds/scrapes. On Steimatzky (2026-10-21) 3,635 such rows were marked instock; 3,334 pages were 404 and 301
+//   live (32 LEGO sets among them), with no field in the row that tells them apart — only the page check does.
+// An in-stock row that was stamped once is never retired by the stamp rules (a weekly sync can skip live products).
+// - one side of a print/digital pair: the store feeds a digital edition as its own row, linked to the printed row by the
+//   digital sku (specialLabel.digital.sku), and either row's card already shows both formats and prices. The link decides,
+//   never the name: same-named books with another sku stay. The printed row stays, unless only the digital one can be bought.
+export const pageStatus=r=>Number(r?.pageCheck?.status)||null;
+const rowTail=r=>String(r?.id??r?._id??'').split(':').pop(),rowStock=r=>r.stockStatus||r.stock_status;
+export function retiredRows(rows,options){
+ const dead=deadRows(rows,options),off=r=>r.hidden===true||r.notInStore===true||r.catalog_visibility==='hidden'||dead(r);
+ const pairs=new Map();for(const r of rows){const key=r.specialLabel?.digital?.sku;if(!key||off(r))continue;const pair=pairs.get(String(key))||pairs.set(String(key),{printed:[],digital:[]}).get(String(key));(rowTail(r)===String(key)?pair.digital:pair.printed).push(r);}
+ const folded=new Set();for(const {printed,digital} of pairs.values()){if(!printed.length||!digital.length)continue;
+  const sold=printed.some(r=>rowStock(r)==='instock')||!digital.some(r=>rowStock(r)==='instock');for(const r of sold?digital:printed)folded.add(r);}
+ return r=>dead(r)||folded.has(r);
+}
+function deadRows(rows,{graceMs=3*864e5}={}){
+ const at=v=>v==null||v===''?NaN:new Date(v).getTime();let newest=-Infinity,stamped=0;
+ for(const r of rows){const t=at(r.lastSeenAt);if(Number.isFinite(t)){stamped++;if(t>newest)newest=t;}}
+ const tracked=rows.length>0&&stamped>=rows.length/2;
+ return r=>{const page=pageStatus(r),live=page===200,seen=at(r.lastSeenAt);
+  if(page===404||page===410)return true;
+  if(tracked&&!Number.isFinite(seen))return !live||(r.stockStatus||r.stock_status)==='outofstock'&&!(Number(r.price)>0);
+  return (r.stockStatus||r.stock_status)==='outofstock'&&(!(Number(r.price)>0)||(tracked&&!(seen>=newest-graceMs)));};
+}
+// Trademark signs go before NFKC, which would spell ™ as "TM" and glue it to the name ("Enduro™" → "endurotm").
+export const normalize = value => String(value ?? '').replace(/[®™℠]/g,'').normalize('NFKC').toLowerCase()
+  .normalize('NFD').replace(/\p{M}/gu,'')
   .replace(/[׳״'’`"“”„«»″‟]/g, '').replace(/[-–—()[\],:;!?]/g, ' ').replace(/\s+/g, ' ').trim();
 const list = value => Array.isArray(value) ? value.filter(x => typeof x === 'string') : [];
+// The merchant feed's own departments (Google product types and the custom "category N" labels): a store whose rows have
+// no categories still says what each product is ("בלשנות ושפות", "מחשבים ואביזרים"), and search can use that.
+export const feedCategories = row => [...new Set([...list(row?.productTypes),...(Array.isArray(row?.customAttributes)?row.customAttributes:[]).filter(a=>/^category [2-9]$/.test(a?.name)).map(a=>a.value).filter(v=>typeof v==='string'&&v)])];
 export function productUrl(value) {
   try {
     const u = new URL(value);
@@ -16,29 +69,11 @@ export function productUrl(value) {
   } catch { return null; }
 }
 
-// A catalog whose source has no categories (Rikushet's JSON-LD) still names the kind of product in its titles, at
-// their head: the type whose name or shopper alias opens the title, as whole words, after any Latin brand/model words
-// or a leading "סט" ("Deuter Dreamlite 500 שק שינה", "סט מזוודות"). "מנעול קוד למזוודה" is a lock and "משקל מזוודות"
-// none of the types; the longest alias wins ("תג מזוודה" over "מזוודה"). Used only when the product has no categories.
-export function typeFromTitle(title, productTypes = {}) {
-  // Punctuation (| - ׳ ') separates words on both sides, so "מוצ׳ילה" in a title meets the alias "מוצ'ילה".
-  const clean = s => normalize(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-  const words = clean(title).split(' ');
-  while (words.length && (/^[\p{Script=Latin}\p{N}]+$/u.test(words[0]) || words[0] === 'סט')) words.shift();
-  const head = ` ${words.join(' ')} `;
-  let best = null;
-  for (const [type, rule] of Object.entries(productTypes))
-    for (const alias of [type, ...(rule.queryAliases || [])].map(clean).filter(Boolean))
-      if (head.startsWith(` ${alias} `) && (!best || alias.length > best.alias.length)) best = {type, alias};
-  return best?.type || null;
-}
-
 export function processProduct(raw, client, observations = [], observedAt = null) {
   const categories = list(raw.categories), tags = list(raw.tags);
   const badgeCandidates = Object.entries(client.badgeCandidates).flatMap(([field, values]) =>
     list(raw[field]).filter(v => values.includes(v)).map(text => ({text, sourceField: field, status: 'needs-verification'})));
-  let types = Object.entries(client.productTypes).filter(([, rule]) => rule.categories.some(c => categories.includes(c))), typeSource = 'categories';
-  if (!categories.length) { const t = typeFromTitle(raw.name || raw.title, client.productTypes); if (t) { types = [[t]]; typeSource = 'title'; } }
+  const types = Object.entries(client.productTypes).filter(([, rule]) => rule.categories.some(c => categories.includes(c)));
   const colors = Object.entries(client.colors).filter(([color, cats]) =>
     list(raw.colors).includes(color) || cats.some(c => categories.includes(c))).map(([color]) => color);
   const finishes = Object.entries(client.finishes || {}).filter(([, rule]) => rule.categories.some(c => categories.includes(c))).map(([key]) => key);
@@ -63,14 +98,14 @@ export function processProduct(raw, client, observations = [], observedAt = null
   if (raw.specialLabel === true) issues.push('legacy-label-without-meaning');
   return {
     id: String(raw.id), tenantId: client.tenantId, schemaVersion: client.version,
-    title: raw.name || raw.title || '', description:raw.description||'', specifications:raw.specifications||{}, sku: String(raw.raw?.sku || ''), url: raw.url,
+    title: String(raw.name || raw.title || ''), description:String(raw.description||''), specifications:raw.specifications||{}, sku: String(raw.raw?.sku || ''), url: raw.url,
     image: raw.image, price: Number.isFinite(raw.price) ? raw.price : null,
     regularPrice: Number.isFinite(raw.regularPrice) ? raw.regularPrice : null,
     currency: raw.currency || null, stockStatus: raw.stockStatus || 'unknown',
     hidden: raw.hidden === true || !client.publishedStatuses.includes(raw.status),
     productType: types.length === 1 ? types[0][0] : null, colors, finishes, categories, tags,
     badges, badgeCandidates, issues,
-    provenance: {productType: typeSource, colors: ['categories', 'colors'], finishes: 'categories', fetchedAt: raw.fetchedAt || null},
+    provenance: {productType: 'categories', colors: ['categories', 'colors'], finishes: 'categories', fetchedAt: raw.fetchedAt || null},
   };
 }
 
@@ -85,13 +120,6 @@ export function applySpelling(query, aliases = {}) {
     text = out + rest;
   }
   return text.trim();
-}
-// The shopper typed an author's name: every query word is a word of one of the product's authors (any order, so
-// "נבון חיים" too). A one-word query must be the whole name, so "עמנואל" does not lift every author called Emanuel.
-const authorsOf=p=>[p.specifications?.author,p.specifications?.['מחבר'],p.author].filter(v=>typeof v==='string'&&v).flatMap(v=>v.split(/[,;/|]/));
-export function authorMatch(p,query){
- const q=normalize(query).split(' ').filter(Boolean);if(!q.length)return false;
- return authorsOf(p).some(a=>{const w=normalize(a).split(' ').filter(Boolean);return q.length>1?q.every(t=>w.includes(t)):w.length===1&&w[0]===q[0];});
 }
 export function planQuery(query, client) {
   const spelled = applySpelling(query, client.queryAliases);

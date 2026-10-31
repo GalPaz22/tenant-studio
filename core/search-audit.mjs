@@ -7,21 +7,27 @@ import {normalize} from './core.mjs';
 import {dbShopperClicks} from '../existing-client.mjs';
 import {evaluateBaseline} from './baseline.mjs';
 import {hash} from './catalog.mjs';
+import {readWeekSignals,weeklyCandidates,recentlyReviewed,recordReview,WEEK_ISSUES} from './weekly-review.mjs';
 
-const REASONS={zero:'החזיר 0 תוצאות לקונים',noClicks:'אף קונה לא לחץ על תוצאה',top:'מהחיפושים המובילים',lost:'עובד בחיפוש הקיים ולא אצלנו',fails:'נכשל בחיפוש הקיים'};
+const REASONS={zero:'החזיר 0 תוצאות לקונים',noClicks:'אף קונה לא לחץ על תוצאה',top:'מהחיפושים הפופולריים ביותר',highConv:'מהחיפושים הממירים ביותר (הוספה לסל)',lowConv:'מהחיפושים הכי פחות ממירים (הוספה לסל)',lost:'עובד בחיפוש הקיים ולא אצלנו',fails:'נכשל בחיפוש הקיים',noCart:'קונים לחצו על תוצאות ואף אחד לא הוסיף לסל',noPurchase:'קונים התעניינו ואף אחד לא רכש',refined:'קונים חיפשו שוב מיד במילים אחרות'};
 
-// Picks the queries worth checking: zero results first, then searched-but-never-clicked, then the most searched.
+const SHORT={zero:'0 תוצאות',noClicks:'בלי קליקים',top:'פופולרי',highConv:'ממיר גבוה',lowConv:'ממיר נמוך',lost:'אבד',fails:'נכשל בקיים',noCart:'קליקים בלי סל',noPurchase:'בלי רכישה',refined:'חיפשו שוב'};
+const WEEK_LABELS={zero:'בלי תוצאות',noClicks:'בלי קליקים',noCart:'קליקים בלי הוספה לסל',noPurchase:'עניין בלי רכישה',refined:'חיפוש חוזר מיידי'};
+
+// Picks the queries worth checking, taking turns between the lists: the most searched, the least converting, the most
+// converting (so what already sells is not broken), then zero results and searched-but-never-clicked.
 export function auditCandidates(signals,{limit=12}={}){
- const lists=[['zero',signals.failed||[]],['noClicks',signals.noClicks||[]],['top',signals.top||[]]],picked=new Map();
+ const lists=[['top',signals.top||[]],['lowConv',signals.worstConverting||[]],['highConv',signals.bestConverting||[]],['zero',signals.failed||[]],['noClicks',signals.noClicks||[]]],picked=new Map();
  for(let i=0;picked.size<limit&&lists.some(([,l])=>i<l.length);i++)for(const [reason,list] of lists){
   const g=list[i],key=normalize(g?.query||'');if(!key)continue;
   const entry=picked.get(key);if(entry){if(!entry.reasons.includes(reason))entry.reasons.push(reason);continue;}
-  if(picked.size<limit)picked.set(key,{query:g.query,reasons:[reason],searches:g.searches,zeroResults:g.zeroResults,clicks:g.clicks,carts:g.carts});
+  if(picked.size<limit)picked.set(key,{query:g.query,reasons:[reason],searches:g.searches,zeroResults:g.zeroResults,clicks:g.clicks,carts:g.carts,...(g.cartRate!==undefined&&{cartRate:g.cartRate})});
  }
  return [...picked.values()];
 }
-const shopperRequest=c=>`בדיקה אוטומטית של חיפוש אמיתי: קונים חיפשו ״${c.query}״ ${c.searches} פעמים (${c.reasons.map(r=>REASONS[r]).join('; ')}). האם התוצאות הנוכחיות הן מה שקונה שמחפש ״${c.query}״ בחנות הזו מצפה לקבל? אם המוצר המבוקש לא קיים בקטלוג, תוצאות ריקות או חלופות קרובות מסומנות ככאלה תקינות.`;
-const fixRequest=(c,f)=>`החיפוש ״${c.query}״ לא מחזיר את מה שקונים מחפשים (${c.searches} חיפושים; ${c.reasons.map(r=>REASONS[r]).join('; ')}). ממצאי הבדיקה: ${String(f.problems||'התוצאות לא מתאימות').slice(0,1500)}.${f.targets?.length?` בחיפוש הקיים הקונים בחרו במוצרים האלה, והחיפוש שלנו חייב להחזיר אותם: ${f.targets.map(t=>`${t.title} (${t.id})`).join(', ')}.`:''}${f.clicked?.wantedVisible?.length?` מוצרים זמינים שקונים לחצו עליהם בחיפוש הזה: ${f.clicked.wantedVisible.map(x=>`${x.title} (${x.id})`).join(', ')}.`:''} תקן כך שקונה שמחפש ״${c.query}״ יקבל את המוצרים הנכונים מהקטלוג, ואם הם לא קיימים — אל תמציא התאמה.`;
+const funnel=c=>(c.cartRate!==undefined?`, ${c.carts||0} הוספות לסל — ${(c.cartRate*100).toFixed(1)}%`:'')+(c.purchases!==undefined?`, ${c.purchases} רכישות`:'');
+const shopperRequest=c=>`בדיקה אוטומטית של חיפוש אמיתי: קונים חיפשו ״${c.query}״ ${c.searches} פעמים${funnel(c)} (${c.reasons.map(r=>REASONS[r]).join('; ')}). האם התוצאות הנוכחיות הן מה שקונה שמחפש ״${c.query}״ בחנות הזו מצפה לקבל? אם המוצר המבוקש לא קיים בקטלוג, תוצאות ריקות או חלופות קרובות מסומנות ככאלה תקינות.`;
+const fixRequest=(c,f)=>`החיפוש ״${c.query}״ לא מחזיר את מה שקונים מחפשים (${c.searches} חיפושים${funnel(c)}; ${c.reasons.map(r=>REASONS[r]).join('; ')}). ממצאי הבדיקה: ${String(f.problems||'התוצאות לא מתאימות').slice(0,1500)}.${f.targets?.length?` בחיפוש הקיים הקונים בחרו במוצרים האלה, והחיפוש שלנו חייב להחזיר אותם: ${f.targets.map(t=>`${t.title} (${t.id})`).join(', ')}.`:''}${f.clicked?.wantedVisible?.length?` מוצרים זמינים שקונים לחצו עליהם בחיפוש הזה: ${f.clicked.wantedVisible.map(x=>`${x.title} (${x.id})`).join(', ')}.`:''} תקן כך שקונה שמחפש ״${c.query}״ יקבל את המוצרים הנכונים מהקטלוג, ואם הם לא קיימים — אל תמציא התאמה.`;
 
 function searchContext(p,services={}){
  if(!p.searchIndex)p.searchIndex=buildSearchIndex(p.productCards,'audit-'+Date.now());
@@ -31,14 +37,17 @@ function searchContext(p,services={}){
 
 // Checks real shopper queries against the current rules; with fix=true each finding goes to the studio agent,
 // and a fix is kept only when its own verification passed (unverified attempts are discarded, never saved).
-export async function auditSearches(project,{model,judge=model,fix=false,limit=12,fixLimit=5,signals=readSearchSignals,source='signals',services={},onEvent=async()=>{}}={}){
+export async function auditSearches(project,{model,judge=model,fix=false,limit=15,fixLimit=5,signals=readSearchSignals,week=readWeekSignals,days=7,source='signals',services={},onEvent=async()=>{}}={}){
  if(!project.productCards?.length)throw Error('נדרש קטלוג שמור');
  if(!Number.isInteger(limit)||limit<1||limit>30||!Number.isInteger(fixLimit)||fixLimit<0||fixLimit>10)throw Error('מגבלות בדיקה לא תקינות');
- await onEvent({type:'note',text:source==='baseline'?'משווה לחיפוש הקיים':'קורא את החיפושים האמיתיים של הקונים'});
+ const weekly=source==='week';
+ await onEvent({type:'note',text:source==='baseline'?'משווה לחיפוש הקיים':weekly?`קורא את כל החיפושים של ${days} הימים האחרונים`:'קורא את החיפושים האמיתיים של הקונים'});
  const fromBaseline=source==='baseline'?baselineCandidates(project,{limit}):null;
- const analytics=fromBaseline?{from:project.baseline.since,to:project.baseline.builtAt,sampledSearches:project.baseline.totalSearches,clickTracking:true}:await signals(project),candidates=fromBaseline?fromBaseline.judged:auditCandidates(analytics,{limit});
- if(!candidates.length&&!fromBaseline?.measured.length)throw Error(fromBaseline?'אין בבסיס חיפושים שאבדו או שנכשלים — אין מה לתקן':'אין עדיין נתוני חיפוש של קונים לבדיקה');
+ const analytics=fromBaseline?{from:project.baseline.since,to:project.baseline.builtAt,sampledSearches:project.baseline.totalSearches,clickTracking:true}:weekly?await week(project,{days}):await signals(project),candidates=fromBaseline?fromBaseline.judged:weekly?weeklyCandidates(analytics,{limit,skip:recentlyReviewed(project)}):auditCandidates(analytics,{limit});
+ if(!candidates.length&&!fromBaseline?.measured.length)throw Error(fromBaseline?'אין בבסיס חיפושים שאבדו או שנכשלים — אין מה לתקן':weekly&&analytics.distinctQueries?`כל ${analytics.distinctQueries} השאילתות של התקופה כבר נבדקו בשבוע האחרון ונמצאו תקינות או תוקנו — אין חדשות לבדיקה`:'אין עדיין נתוני חיפוש של קונים לבדיקה');
+ if(weekly)await onEvent({type:'note',text:`נסרקו ${analytics.distinctQueries} שאילתות שונות (${analytics.sampledSearches} חיפושים) — ${analytics.flaggedQueries} עם משפך שבור`});
  let p=structuredClone(project);
+ const skipped=weekly?analytics.queries.filter(q=>q.issues.length&&recentlyReviewed(project).has(normalize(q.query))).length:0;
  const ctx=searchContext(p,services),results=[];
  await onEvent({type:'note',text:`בודק ${candidates.length} חיפושים מול הכללים הנוכחיים`});
  // Searches run one by one (the search service limits concurrent model stages); reviews run in parallel.
@@ -47,7 +56,7 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
  for(const [i,{c,id,checks}] of checked.entries()){
   const v=verdicts[i],q=v.queries?.[0],status=v.error?'unreviewed':q.satisfied?'ok':'problem';
   const r={...c,status,total:checks[0].total,problems:v.error||q.problems,unwantedIds:q?.unwantedIds||[],missingIds:q?.missingIds||[],before:checks[0].products.slice(0,12).map(x=>({id:x.id,title:x.title}))};results.push(r);
-  await onEvent({type:'tool_done',id,name:'audit_query',ok:status==='ok',text:`״${c.query}״ (${c.searches} חיפושים${c.clicks?`, ${c.clicks} קליקים`:''}) — ${r.total} תוצאות — ${status==='ok'?'תקין':status==='problem'?'בעיה':'לא נבדק'}`,search:{query:c.query,total:r.total},products:checks[0].products.slice(0,6).map(x=>{const card=p.productCards.find(y=>y.id===x.id);return {id:x.id,title:x.title,image:card?.image,price:card?.price};})});
+  await onEvent({type:'tool_done',id,name:'audit_query',ok:status==='ok',text:`״${c.query}״ (${c.searches} חיפושים${c.clicks?`, ${c.clicks} קליקים`:''}${funnel(c)} · ${c.reasons.map(r=>SHORT[r]).join(', ')}) — ${r.total} תוצאות — ${status==='ok'?'תקין':status==='problem'?'בעיה':'לא נבדק'}`,search:{query:c.query,total:r.total},products:checks[0].products.slice(0,6).map(x=>{const card=p.productCards.find(y=>y.id===x.id);return {id:x.id,title:x.title,image:card?.image,price:card?.price};})});
  }
  // Real clicks separate catalog gaps (wanted products missing or out of stock) from search problems a rule can fix.
  const clicksOf=services.database?.clicks||dbShopperClicks;
@@ -58,10 +67,10 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
   r.clicked={clicks:c.clicks,wantedVisible:c.products.filter(x=>x.visible).slice(0,8).map(x=>({id:x.id,title:x.title,clicks:x.clicks})),missing:c.products.filter(x=>!x.inCatalog).slice(0,8).map(x=>x.title),outOfStock:c.products.filter(x=>x.inCatalog&&!x.visible).slice(0,8).map(x=>x.title)};
   if(share>=0.6){r.status='data-gap';r.problems=`רוב הקליקים של הקונים (${Math.round(share*100)}%) הם על מוצרים שלא ניתן להציג: ${r.clicked.missing.length?`חסרים בקטלוג: ${r.clicked.missing.map(t=>`״${t}״`).join(', ')}`:''}${r.clicked.missing.length&&r.clicked.outOfStock.length?'; ':''}${r.clicked.outOfStock.length?`אזלו: ${r.clicked.outOfStock.map(t=>`״${t}״`).join(', ')}`:''}. זה פער בפיד המוצרים, לא בעיית חיפוש.`;}
  }
- // Most-searched problems are fixed first.
+ // Most-searched problems are fixed first; in a weekly run broken funnels come before popular queries without a flag.
  // Measured against production (lost queries) need no reviewer to be a problem.
  if(fromBaseline)for(const m of fromBaseline.measured){results.push(m);const id=randomUUID();await onEvent({type:'tool',id,name:'audit_query',args:{query:m.query}});await onEvent({type:'tool_done',id,name:'audit_query',ok:false,text:`״${m.query}״ (${m.searches} חיפושים) — עובד בחיפוש הקיים, אצלנו חסרים ${m.missingTargets.length} מוצרים`,search:{query:m.query}});}
- const problems=results.filter(r=>r.status==='problem').sort((a,b)=>(b.searches||0)-(a.searches||0));
+ const unflagged=r=>weekly&&r.reasons.join()==='top'?1:0,problems=results.filter(r=>r.status==='problem').sort((a,b)=>unflagged(a)-unflagged(b)||(b.searches||0)-(a.searches||0));
  // A stop ends fixing; fixes already verified and saved are kept.
  let stopped=null;
  if(fix)for(const r of problems.slice(0,fixLimit)){
@@ -82,15 +91,25 @@ export async function auditSearches(project,{model,judge=model,fix=false,limit=1
  if(fixed.length>1&&!stopped){const final=searchContext(p,services);for(const r of fixed){const v=await judgeChecks(await collectChecks(final,[r.query]),shopperRequest(r),[],judge);if(!v.error&&!v.satisfied){r.fix.status='regressed';r.fix.message=v.queries[0].problems;}}}
  const count=s=>results.filter(r=>r.status===s).length,fixCount=s=>results.filter(r=>r.fix?.status===s).length;
  const gaps=results.filter(r=>r.status==='data-gap');
+ const group=k=>results.filter(r=>r.reasons.includes(k)),groupLine=(k,label)=>group(k).length?`${label}: ${group(k).filter(r=>r.status==='ok').length}/${group(k).length} תקינים`:null;
  const lines=[`**נבדקו ${results.length} חיפושים אמיתיים:** ${count('ok')} תקינים, ${problems.length} עם בעיה בחיפוש${gaps.length?`, ${gaps.length} עם פער בקטלוג`:''}${count('unreviewed')?`, ${count('unreviewed')} לא נבדקו`:''}.`];
+ // The scan covers every query of the window; the reviewer saw the candidates picked from it.
+ if(weekly){const kinds=WEEK_ISSUES.filter(k=>analytics.issues[k].queries).map(k=>`${WEEK_LABELS[k]}: ${analytics.issues[k].queries} שאילתות (${analytics.issues[k].searches} חיפושים)`);
+  lines.unshift(`**סריקת ${days} הימים האחרונים:** ${analytics.distinctQueries} שאילתות שונות ב־${analytics.sampledSearches} חיפושים; ב־${analytics.flaggedQueries} מהן (${analytics.flaggedSearches} חיפושים) המשפך נשבר${kinds.length?' — '+kinds.join(' · '):''}.${analytics.purchaseTracking?'':' אין רכישות שמשויכות לחיפוש בתקופה, ולכן ״בלי רכישה״ לא נמדד.'}${analytics.clickTracking?'':' אין אירועי קליק, ולכן ״בלי קליקים״ לא נמדד.'}${analytics.complete?'':' חלק ממקורות הנתונים חלקיים — הספירות הן רצפה ולא תמונה מלאה.'}`);
+  const waiting=analytics.queries.filter(q=>q.issues.length).length-results.filter(r=>WEEK_ISSUES.some(k=>r.reasons.includes(k))).length-skipped;
+  if(skipped||waiting>0)lines.push([skipped&&`${skipped} שאילתות שנבדקו בשבוע האחרון (תקינות, תוקנו או פער בקטלוג) לא נבדקו שוב`,waiting>0&&`${waiting} שאילתות עם משפך שבור ממתינות לריצה הבאה`].filter(Boolean).join(' · ')+'.');}
+ const groups=(weekly?[...WEEK_ISSUES.map(k=>groupLine(k,WEEK_LABELS[k])),groupLine('top','פופולריים ללא דגל')]:[groupLine('top','פופולריים'),groupLine('highConv','ממירים ביותר'),groupLine('lowConv','הכי פחות ממירים')]).filter(Boolean);
+ if(groups.length)lines.push(groups.join(' · ')+(analytics.cartTracking===false?' · אין אירועי הוספה לסל עם שאילתה, ולכן לא נבדקה המרה':'')+'.');
  if(fix&&problems.length)lines.push(`**תיקון אוטומטי:** ${fixCount('fixed')} תוקנו ואומתו, ${fixCount('not-verified')+fixCount('failed')} לא אומתו ולא נשמרו${fixCount('regressed')?`, ${fixCount('regressed')} נפגעו מתיקון מאוחר יותר`:''}${problems.length>fixLimit?`, ${problems.length-fixLimit} ממתינים לסבב הבא`:''}.`);
- for(const r of problems)lines.push(`* ״${r.query}״ (${r.searches} חיפושים) — ${r.fix?{fixed:'✅ תוקן',regressed:'⚠️ נפגע מתיקון אחר','not-verified':'❌ לא אומת',failed:'❌ נכשל'}[r.fix.status]+': ':''}${r.fix?.status==='fixed'?r.fix.changes.join(', '):r.problems}`);
+ for(const r of problems)lines.push(`* ״${r.query}״ (${r.searches} חיפושים${funnel(r)} · ${r.reasons.map(x=>SHORT[x]).join(', ')}) — ${r.fix?{fixed:'✅ תוקן',regressed:'⚠️ נפגע מתיקון אחר','not-verified':'❌ לא אומת',failed:'❌ נכשל'}[r.fix.status]+': ':''}${r.fix?.status==='fixed'?r.fix.changes.join(', '):r.problems}`);
  if(gaps.length)lines.push('**פערים בקטלוג (לא ניתנים לתיקון בכללי חיפוש — יש להשלים את פיד המוצרים או המלאי):**',...gaps.map(r=>`* ״${r.query}״ (${r.searches} חיפושים) — ${r.problems}`));
  if(stopped)lines.push('**נעצר לבקשתך** — חיפושים שעוד לא טופלו לא תוקנו.');
  if(fix&&fixCount('fixed'))lines.push('החיפושים שתוקנו נשמרו כדוגמאות לבדיקה קבועה שממתינות לאישורך.');
  const message=lines.join('\n'),at=new Date().toISOString();
- p.audit={at,fix,analyticsWindow:{from:analytics.from,to:analytics.to,searches:analytics.sampledSearches,clickTracking:analytics.clickTracking},results:results.map(({before,...r})=>r)};
- p.messages.push({role:'user',text:fix?'בדיקה ותיקון אוטומטי של החיפושים המובילים':'בדיקה אוטומטית של החיפושים המובילים',at},{role:'assistant',text:message,steps:[],changes:fixed.flatMap(r=>r.fix.changes),version:fixed.length?p.revisions.length:null,audit:true,at});p.messages=p.messages.slice(-80);
+ if(weekly)recordReview(p,results);
+ const ask=weekly?`${fix?'בדיקה ותיקון':'סריקה'} לפי חיפושי ${days} הימים האחרונים — דגש על חיפושים שלא מובילים לקליק או לרכישה`:fix?'בדיקה ותיקון אוטומטי של החיפושים הפופולריים, הממירים והפחות ממירים':'בדיקה אוטומטית של החיפושים הפופולריים, הממירים והפחות ממירים';
+ p.audit={at,fix,source,analyticsWindow:{from:analytics.from,to:analytics.to,searches:analytics.sampledSearches,clickTracking:analytics.clickTracking},results:results.map(({before,...r})=>r)};
+ p.messages.push({role:'user',text:ask,at},{role:'assistant',text:message,steps:[],changes:fixed.flatMap(r=>r.fix.changes),version:fixed.length?p.revisions.length:null,audit:true,at});p.messages=p.messages.slice(-80);
  p.productCardsProfileHash=hash(p.revisions.at(-1).profile);
  if(fixed.length&&p.baseline){await onEvent({type:'note',text:'מעדכן את ההשוואה לחיפוש הקיים'});p.baselineEval={...evaluateBaseline(p,p.revisions.at(-1).profile),profileHash:hash(p.revisions.at(-1).profile),indexVersion:p.searchIndex?.version};}
  await onEvent({type:'message',text:message,changes:fixed.flatMap(r=>r.fix.changes),version:fixed.length?p.revisions.length:null});

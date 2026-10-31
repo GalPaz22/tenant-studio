@@ -1,6 +1,6 @@
 # Connected storefront plugin
 
-In **Studio → Versions and rules → Connected plugin**, choose an existing plugin
+In **Studio → Plugin → Connected plugin**, choose an existing plugin
 folder (extract ZIP files first), a name and WooCommerce, Shopify, Magento or
 Custom. The folder is copied into the project's saved source workspace, including
 binary assets. It is not replaced with the generic generated widget. Git,
@@ -54,3 +54,14 @@ modify existing store settings, databases, or the local source directory.
 - POST `.../plugin/generate`: generator options; attaches the resulting source.
 
 Tests: `node --test plugin-workspace.test.mjs plugin-workspace-api.test.mjs`.
+
+
+## Plugin agent workflow
+
+Studio's **Plugin** tab contains the dedicated instruction form, its conversation,
+connected source, files/history and package downloads. Submitting “Update with
+agent and download plugin” sends the request to the existing Studio agent with
+plugin-specific instructions. A ZIP is produced only after a completed saved
+turn, a newer source revision and successful plugin validation. Errors, stopped
+turns, unchanged source and stale revisions do not release a package. The archive
+contains the complete connected source snapshot, including binary assets.

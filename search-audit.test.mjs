@@ -16,7 +16,12 @@ test('real click and cart collections, delivered counts and case variants feed t
 });
 test('candidates mix zero-result, never-clicked and top queries without duplicates',()=>{
  const c=auditCandidates({failed:[{query:'a',searches:5}],noClicks:[{query:'b',searches:9}],top:[{query:'B',searches:9},{query:'c',searches:20}]},{limit:3});
- assert.deepEqual(c.map(x=>[x.query,x.reasons.join()]),[['a','zero'],['b','noClicks,top'],['c','top']]);
+ assert.deepEqual(c.map(x=>[x.query,x.reasons.join()]),[['B','top,noClicks'],['a','zero'],['c','top']]);
+ const s=summarizeQueries([...Array(10).fill({query:'sells'}),...Array(20).fill({query:'popular'}),...Array(6).fill({query:'dead'}),{query:'rare'}],[...Array(5).fill({query:'sells'}),{query:'popular'},{query:'rare'}]);
+ assert.deepEqual(s.bestConverting.map(g=>[g.query,g.cartRate]),[['sells',.5],['popular',.05]],'rare queries are not rated');
+ assert.deepEqual(s.worstConverting.map(g=>g.query),['dead','popular','sells']);
+ assert.deepEqual(auditCandidates(s,{limit:3}).map(x=>[x.query,x.reasons.join()]),[['popular','top'],['dead','lowConv'],['sells','highConv']]);
+ assert.deepEqual(summarizeQueries(Array(9).fill({query:'x'})).worstConverting,[],'without cart events nothing is rated');
 });
 test('check-only audit reports findings and changes no rules',async()=>{
  const p=shop(),events=[];

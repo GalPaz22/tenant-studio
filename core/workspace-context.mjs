@@ -32,8 +32,8 @@ async function refreshSnapshot(p,services,now){
   top:a.top.slice(0,12).map(t=>`${t.query} (${t.searches} חיפושים, ${t.clickSessions} הקליקו, ${t.cartSessions} לסל)`),zeroResults:a.zeroResults.slice(0,8).map(z=>`${z.query} ×${z.hits}`)};
  p.contextSnapshot={at:new Date(now).toISOString(),user,activity:brief(activity)};return p.contextSnapshot;
 }
-export async function workspaceContext(ctx,{now=Date.now()}={}){
- const p=ctx.p,pr=ctx.profile,live=p.existingClient?await refreshSnapshot(p,ctx.services||{},now):null;
+export async function workspaceContext(ctx,{now=Date.now(),live:includeLive=true}={}){
+ const p=ctx.p,pr=ctx.profile,live=includeLive&&p.existingClient?await refreshSnapshot(p,ctx.services||{},now):null;
  const revisions=p.revisions.slice(-5).reverse().map(r=>({version:r.number,at:r.createdAt?.slice(0,10),note:String(r.note||'').slice(0,80),changes:(r.changes||[]).slice(0,3).map(c=>String(c).slice(0,80))}));
  const b=p.baselineEval?.summary;
  return {

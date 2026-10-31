@@ -1,7 +1,7 @@
 import {normalize,planQuery,matchesScopedAliases,sellable,authorMatch} from './core.mjs';
 import {hash} from './hash.mjs';
 // Bump when tokenization changes so a saved index is rebuilt instead of reused.
-export const TOKENIZER=2;
+export const TOKENIZER=3;
 export function buildSearchIndex(products,version) {
   const terms=Object.create(null),identifiers=Object.create(null);
   for(const p of products){const values=[p.id,p.sku,p.mpn,p.gtin,...(p.variants||[]).filter(v=>v.stockStatus!=='outofstock').flatMap(v=>[v.id,v.sku,v.mpn,v.gtin])];for(const k of new Set(values.filter(Boolean).map(normalize)))(identifiers[k]??=[]).push(p.id);
@@ -18,6 +18,10 @@ export function boundedDistance(a,b,max){
   return row[b.length];
 }
 const hebrew=/^[\u05d0-\u05ea]+$/u,prefixes=/^[והבלמשכ]/u;
+// In a title a word often carries a Hebrew prefix ("אילת נוסעת באוטובוס", "כיסוי לקינדל"): there it is the word itself.
+// Only titles: "מספר" in a blurb is a number, not "ספר". Short words are left out ("לבית" and "הבית" are their own titles).
+const sameSpelling=(a,b)=>a!==b&&hebrew.test(a)&&hebrew.test(b)&&a.replace(/[יו]/g,'')===b.replace(/[יו]/g,'');
+const PREFIXED=[...'והבלמשכ'],prefixedForms=term=>hebrew.test(term)&&term.length>=4?PREFIXED.map(x=>x+term):[];
 const vocabularies=new WeakMap();
 // Hebrew number inflection: the singular and plural of a word are the same product word (בננות↔בננה,
 // עגבניות↔עגבניה/עגבנייה, תפוחים↔תפוח, מלפפונים↔מלפפון). Only forms that exist in the index are used.
@@ -54,11 +58,17 @@ export function resolveTerm(index,term,{relax=false}={}){
   if(!stem&&!chosen.length)return {kind:'none',postings:own};
   const postings=new Map(own);const add=(t,cost)=>{for(const id of index.terms[t])if(!postings.has(id)||postings.get(id)>cost)postings.set(id,cost);};
   if(stem)add(stem,1);for(const {t,edits} of chosen)add(t,1+edits);
-  return {kind:stem&&!chosen.length?'prefix':chosen.length&&!stem?'fuzzy':'prefix+fuzzy',to:[...(stem?[stem]:[]),...chosen.map(c=>c.t)],...(chosen.length&&{edits:least}),postings};
+  // relaxed: the term is a real catalog word that was approximated only because the words do not occur together.
+  return {kind:stem&&!chosen.length?'prefix':chosen.length&&!stem?'fuzzy':'prefix+fuzzy',to:[...(stem?[stem]:[]),...chosen.map(c=>c.t)],...(chosen.length&&{edits:least}),...(relax&&own.size&&{relaxed:true}),postings};
 }
 export function createIndexRetriever(products,client,index) {
   if(index.contentHash!==hash(products))throw Error('האינדקס אינו תואם לגרסת המוצרים');
   const byId=new Map(products.map(p=>[p.id,p]));
+  const titleCache=new Map(),titleWords=p=>{let w=titleCache.get(p.id);if(!w){w=new Set(normalize(p.title).split(' ').filter(Boolean));titleCache.set(p.id,w);}return w;};
+  const inTitle=(words,term)=>words.has(term)||prefixedForms(term).some(f=>words.has(f));
+  const withTitleForms=(term,r)=>{const postings=new Map(r.postings);for(const f of prefixedForms(term))if(Object.hasOwn(index.terms,f))for(const id of index.terms[f])if(!postings.has(id)&&titleWords(byId.get(id)).has(f))postings.set(id,0);
+    return postings.size===r.postings.size?r:{...r,kind:r.kind==='none'?'exact':r.kind,postings};};
+  const resolve=(term,options)=>withTitleForms(term,resolveTerm(index,term,options));
   return (query)=>{
     const normalized=normalize(query),plan=planQuery(query,client),exact=Object.hasOwn(index.identifiers,normalized)?index.identifiers[normalized]:null;
     const visible=p=>sellable(p,client)&&(exact||
@@ -66,15 +76,20 @@ export function createIndexRetriever(products,client,index) {
     const run=resolved=>{let ids=exact||products.map(p=>p.id);const penalty=new Map();
       if(!exact)for(const r of resolved){ids=ids.filter(id=>r.postings.has(id));for(const id of ids)penalty.set(id,(penalty.get(id)||0)+r.postings.get(id));}
       return {penalty,matches:ids.map(id=>byId.get(id)).filter(visible),resolved};};
-    let resolved=exact?[]:plan.terms.map(term=>resolveTerm(index,term)),best=run(resolved);
-    // Every term exists but not together: approximate one term at a time, fewest edits first.
-    if(!best.matches.length&&resolved.length>1)for(const [i,term] of plan.terms.entries()){if(resolved[i].kind!=='exact')continue;const relaxed=resolveTerm(index,term,{relax:true});if(relaxed.kind==='none')continue;
-      const attempt=run(resolved.map((r,j)=>j===i?relaxed:r));if(attempt.matches.length&&(!best.matches.length||(relaxed.edits||0)<(best.relaxedEdits||0)||(relaxed.edits||0)===(best.relaxedEdits||0)&&attempt.matches.length>best.matches.length))best={...attempt,relaxedEdits:relaxed.edits||0};}
+    let resolved=exact?[]:plan.terms.map(term=>resolve(term)),best=run(resolved);
+    // Every term exists but not together: approximate one term at a time, fewest edits first. When the approximation is
+    // the same word in another Hebrew spelling (with or without י / ו: איילת, אילת) and a product's own title then carries
+    // every word, that product is the answer ("איילת אוטובוס" → "אילת נוסעת באוטובוס"): only such products are kept and the
+    // correction is trusted. The word that tells books apart decides, not the name. Any other edit stays a guess ("eden" → "even").
+    if(!best.matches.length&&resolved.length>1)for(const [i,term] of plan.terms.entries()){if(resolved[i].kind!=='exact')continue;const relaxed=resolve(term,{relax:true});if(relaxed.kind==='none')continue;
+      const attempt=run(resolved.map((r,j)=>j===i?relaxed:r)),to=(relaxed.to||[]).filter(t=>sameSpelling(t,term)),titled=to.length?attempt.matches.filter(p=>{const name=new Set(normalize(String(p.title).split(' / ')[0]).split(' ').filter(Boolean));return attempt.resolved.every((r,j)=>(j===i?to:[plan.terms[j],...(r.to||[])]).some(t=>inTitle(name,t)));}):[];
+      if(titled.length){if(!best.titled||titled.length>best.matches.length)best={...attempt,matches:titled,titled:true,relaxedEdits:relaxed.edits||0};continue;}
+      if(!best.titled&&attempt.matches.length&&(!best.matches.length||(relaxed.edits||0)<(best.relaxedEdits||0)||(relaxed.edits||0)===(best.relaxedEdits||0)&&attempt.matches.length>best.matches.length))best={...attempt,relaxedEdits:relaxed.edits||0};}
     const {penalty}=best;let {matches}=best;
-    const corrections=best.resolved.flatMap((r,i)=>r.kind!=='exact'&&r.kind!=='none'?[{term:plan.terms[i],kind:r.kind,to:r.to,...(r.edits&&{edits:r.edits})}]:[]);
+    const corrections=best.resolved.flatMap((r,i)=>r.kind!=='exact'&&r.kind!=='none'?[{term:plan.terms[i],kind:r.kind,to:r.to,...(r.edits&&{edits:r.edits}),...(r.relaxed&&!best.titled&&{relaxed:true})}]:[]);
     if(corrections.length)plan.corrections=corrections;
     const rankTerms=plan.terms.length?plan.terms:(plan.scopedAliases||[]).map(r=>normalize(r.term)).filter(Boolean);
-    const titleHits=p=>{const words=new Set(normalize(p.title).split(' ').filter(Boolean));return rankTerms.reduce((n,t)=>n+(words.has(t)?1:0),0);};
+    const titleHits=p=>{const words=titleWords(p);return rankTerms.reduce((n,t)=>n+(inTitle(words,t)?1:0),0);};
     // A query that names an author puts that author's books first ("חיים נבון" over blurbs that mention both words).
     // Among equally good matches, products shoppers chose more often (production clicks and carts) come first.
     const byAuthor=new Set(rankTerms.length?matches.filter(p=>authorMatch(p,rankTerms.join(' '))).map(p=>p.id):[]);

@@ -4,20 +4,25 @@ import {randomUUID} from 'node:crypto';
 // full project files (they can exceed 100MB). The meta records the project file's mtime and is rebuilt when stale.
 export function metaOf(p){
  return {id:p.id,url:p.url,platform:p.platform,name:p.name,status:p.status,revision:p.revisions?.length||0,products:p.productCards?.length||0,existing:!!p.existingClient,updatedAt:p.updatedAt,
-  username:p.existingClient?.username||null,tagging:!!p.tagging,sync:p.sync||null,feed:p.shopifyFeed||null,pixel:p.shopifyPixel?.settingsHash||null,pendingSyncEvents:p.pendingSyncEvents?.length||0,latestBuildId:p.latestBuildId||null,buildRunId:p.buildRunId||null,crawler:p.crawler||null,siteCrawlPages:p.siteCrawl?.pages||0};
+  username:p.existingClient?.username||null,dbName:p.existingClient?.dbName||null,tagging:!!p.tagging,sync:p.sync||null,feed:p.shopifyFeed||null,pixel:p.shopifyPixel?.settingsHash||null,pendingSyncEvents:p.pendingSyncEvents?.length||0,latestBuildId:p.latestBuildId||null,buildRunId:p.buildRunId||null,crawler:p.crawler||null,siteCrawlPages:p.siteCrawl?.pages||0,concierge:p.concierge?.enabled===true,labels:p.labelScanAuto?{every:p.labelScanAuto.everyHours,at:p.labelScan?.scannedAt||null}:null};
 }
 const LIST_FIELDS=['id','url','platform','name','status','revision','products','existing','updatedAt'];
-export function createStore(root) {
+// Parsing a large project costs about three times its file size in heap (a 400MB file takes ~1.2GB), so overlapping
+// reads of big clients are queued one at a time; small projects are never delayed.
+export const LARGE_PROJECT_BYTES=50*1024*1024;
+function gate(){let tail=Promise.resolve();return fn=>{const run=tail.then(fn,fn);tail=run.catch(()=>{});return run;};}
+export function createStore(root,{largeBytes=LARGE_PROJECT_BYTES,onParse=()=>{}}={}) {
  const path=id=>{if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid project ID');return `${root}/${id}.json`};
  const metaPath=id=>`${root}/${id}.meta.json`;
  async function writeMeta(project,mtimeMs){const file=metaPath(project.id),temp=file+'.'+randomUUID()+'.tmp';await writeFile(temp,JSON.stringify({...metaOf(project),mtimeMs}),{mode:0o600});await rename(temp,file);}
- const rebuilding=new Map();
+ const rebuilding=new Map(),oneLarge=gate();
+ async function parse(file){const {size}=await stat(file);const load=async()=>{onParse(size,'start');try{return JSON.parse(await readFile(file,'utf8'));}finally{onParse(size,'end');}};return size>=largeBytes?oneLarge(load):load();}
  async function meta(id){
   const {mtimeMs}=await stat(path(id));
-  try{const m=JSON.parse(await readFile(metaPath(id),'utf8'));if(m.mtimeMs===mtimeMs)return m;}catch{}
+  try{const m=JSON.parse(await readFile(metaPath(id),'utf8'));if(m.mtimeMs===mtimeMs&&'labels' in m&&'dbName' in m)return m;}catch{}
   // Concurrent callers share one full parse of the project file.
   const key=id+':'+mtimeMs;
-  if(!rebuilding.has(key))rebuilding.set(key,(async()=>{const project=JSON.parse(await readFile(path(id),'utf8'));await writeMeta(project,mtimeMs);return {...metaOf(project),mtimeMs};})().finally(()=>rebuilding.delete(key)));
+  if(!rebuilding.has(key))rebuilding.set(key,(async()=>{const project=await parse(path(id));await writeMeta(project,mtimeMs);return {...metaOf(project),mtimeMs};})().finally(()=>rebuilding.delete(key)));
   return rebuilding.get(key);
  }
  async function metas(){
@@ -27,7 +32,7 @@ export function createStore(root) {
   return results.sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
  }
  return {
-  async read(id){return JSON.parse(await readFile(path(id),'utf8'))},
+  async read(id){return parse(path(id))},
   async save(project){await mkdir(root,{recursive:true});const file=path(project.id),temp=file+'.'+randomUUID()+'.tmp';await writeFile(temp,JSON.stringify(project),{mode:0o600});await rename(temp,file);await writeMeta(project,(await stat(file)).mtimeMs);return project},
   async list(){return (await metas()).map(m=>Object.fromEntries(LIST_FIELDS.map(k=>[k,m[k]])))},
   meta,metas

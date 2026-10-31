@@ -26,7 +26,8 @@ export function moduleEdition(project){
  return {revision:revision.number,profile:revision.profile,snapshot:{productCards:project.productCards,storeContext:project.storeContext||null,tagAssignments:project.tagAssignments||{},studioVectors:project.studioVectors||null}};
 }
 // Cheap fingerprint of what an edition depends on, so a save that changed nothing relevant publishes nothing.
-export const editionKey=p=>`${p.revisions?.length||0}:${p.productCardsProfileHash||''}:${p.productCards?.length||0}:${Object.keys(p.tagAssignments||{}).length}`;
+// The label digest (core/label-scan.mjs) is part of it: a rescan that only changed store labels publishes too.
+export const editionKey=p=>`${p.revisions?.length||0}:${p.productCardsProfileHash||''}:${p.productCards?.length||0}:${Object.keys(p.tagAssignments||{}).length}${p.labelScan?.digest?':'+p.labelScan.digest:''}`;
 
 export function publishModule(project,slug,{by='tenant-studio',now=()=>new Date(),...opts}={}){
  const edition=moduleEdition(project),raw=Buffer.from(JSON.stringify(edition)),gz=gzipSync(raw,{level:6});

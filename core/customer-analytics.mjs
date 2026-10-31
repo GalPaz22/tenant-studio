@@ -14,12 +14,15 @@ export function analyticsOptions(a={},now=Date.now()){
 // Raw sessions stay inside this function; only aggregate, tenant-scoped evidence reaches the model.
 export function summarizeCustomer({queries=[],clicks=[],carts=[],purchases=[]},options,{sources={},cards=[]}={}){
  const groups=new Map(),timeline=new Map(),products=new Map(),seenOrders=new Set();
- const get=q=>{q=key(q);if(!q)return null;if(!groups.has(q))groups.set(q,{query:q,searches:0,clicks:0,carts:0,purchases:0,explicitPurchases:0,inferredPurchases:0,zeroResults:0,measuredResults:0,sessions:new Set(),converted:new Set(),carted:new Set(),clicked:new Set()});return groups.get(q);};
+ const get=q=>{q=key(q);if(!q)return null;if(!groups.has(q))groups.set(q,{query:q,searches:0,clicks:0,carts:0,purchases:0,explicitPurchases:0,inferredPurchases:0,zeroResults:0,measuredResults:0,sessions:new Set(),refined:new Set(),converted:new Set(),carted:new Set(),clicked:new Set()});return groups.get(q);};
  const inWindow=r=>time(r)>=Date.parse(options.from)&&time(r)<Date.parse(options.to);
  queries=queries.filter(inWindow);clicks=clicks.filter(inWindow);carts=carts.filter(inWindow);purchases=purchases.filter(inWindow);
  for(const r of queries){const g=get(r.query);if(!g)continue;g.searches++;const s=session(r);if(s){g.sessions.add(s);if(!timeline.has(s))timeline.set(s,[]);timeline.get(s).push({q:g.query,t:time(r)});}const n=r.resultCount??r.resultsCount??r.totalResults??r.delivered;if(typeof n==='number'){g.measuredResults++;if(n===0)g.zeroResults++;}}
  const queryTimeline=new Map();
- for(const [sid,list] of timeline){list.sort((a,b)=>a.t-b.t);const byQuery=new Map();for(const item of list){if(!byQuery.has(item.q))byQuery.set(item.q,[]);byQuery.get(item.q).push(item);}queryTimeline.set(sid,byQuery);}
+ for(const [sid,list] of timeline){list.sort((a,b)=>a.t-b.t);
+  // Searched again within two minutes with different words: the first results did not answer. Typing on (one query a prefix of the other) is not a new search.
+  for(let i=1;i<list.length;i++){const a=list[i-1],b=list[i];if(a.q!==b.q&&b.t-a.t<=12e4&&!a.q.startsWith(b.q)&&!b.q.startsWith(a.q))groups.get(a.q).refined.add(sid);}
+  const byQuery=new Map();for(const item of list){if(!byQuery.has(item.q))byQuery.set(item.q,[]);byQuery.get(item.q).push(item);}queryTimeline.set(sid,byQuery);}
  const preceding=(list,t)=>{let low=0,high=list.length;while(low<high){const mid=(low+high)>>>1;if(list[mid].t<=t)low=mid+1;else high=mid;}const item=list[low-1];return item&&t-item.t<=864e5?item:null;};
  const attribute=r=>{const explicit=key(r.search_query||r.query);if(explicit)return {q:explicit,kind:'explicit'};
   const before=preceding(timeline.get(session(r))||[],time(r));return before?{q:before.q,kind:'inferred'}:null;};
@@ -47,7 +50,7 @@ export function summarizeCustomer({queries=[],clicks=[],carts=[],purchases=[]},o
  const complete=Object.values(sources).every(s=>s.status==='ok'&&!s.truncated);
  const searchMissing=clicks.length>0&&!queries.length;
  const purchaseTrackingEvidence=[...groups.values()].some(g=>g.converted.size>0);
- const rows=[...groups.values()].map(g=>({query:g.query,searches:g.searches,searchSessions:g.sessions.size,clicks:g.clicks,carts:g.carts,purchases:g.purchases,explicitPurchases:g.explicitPurchases,inferredPurchases:g.inferredPurchases,convertedSearchSessions:g.converted.size,zeroResults:g.zeroResults,measuredResults:g.measuredResults,
+ const rows=[...groups.values()].map(g=>({query:g.query,searches:g.searches,searchSessions:g.sessions.size,clicks:g.clicks,carts:g.carts,purchases:g.purchases,explicitPurchases:g.explicitPurchases,inferredPurchases:g.inferredPurchases,convertedSearchSessions:g.converted.size,refinedSessions:g.refined.size,zeroResults:g.zeroResults,measuredResults:g.measuredResults,
   purchaseRate:complete&&purchaseTrackingEvidence&&g.sessions.size?g.converted.size/g.sessions.size:null,cartRate:complete&&g.sessions.size?g.carted.size/g.sessions.size:null,clickRate:complete&&g.sessions.size?g.clicked.size/g.sessions.size:null}));
  const eligible=rows.filter(r=>options.query?r.query===options.query:options.sort==='low_conversion'?r.searchSessions>=options.minSearches&&r.purchaseRate!==null:r.searches>0||r.purchases>0||r.clicks>0||r.carts>0);
  eligible.sort(options.sort==='low_conversion'?(a,b)=>a.purchaseRate-b.purchaseRate||b.searchSessions-a.searchSessions:(a,b)=>b[options.sort]-a[options.sort]);
@@ -66,8 +69,9 @@ export function compactAnalytics(report,maxChars=5800){
  if(clipped)out.outputLimit={shownQueries:out.queries.length,matchingQueries:report.matchingQueries,note:'Use query for drilldown; output shortened, underlying source coverage is unchanged.'};
  return out;
 }
-export async function readCustomerAnalytics(p,args={},deps={}){
- const options=analyticsOptions(args);if(!p.existingClient?.dbName)throw Error('נדרש לקוח מחובר למסד dashboard');
+// The raw events of a window, per source; summarizeCustomer turns them into aggregates.
+export async function readCustomerEvents(p,options,deps={}){
+ if(!p.existingClient?.dbName)throw Error('נדרש לקוח מחובר למסד dashboard');
  let client=deps.client;
  if(!client){const uri=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;if(!uri)throw Error('חסר חיבור למסד');client=new MongoClient(uri,{serverSelectionTimeoutMS:8000});}
  try{if(!deps.client)await client.connect();const db=client.db(p.existingClient.dbName),sources={},data={queries:[],clicks:[],carts:[],purchases:[]};
@@ -79,6 +83,9 @@ export async function readCustomerAnalytics(p,args={},deps={}){
    const filter={$expr:{$and:[{$gte:[date,new Date(options.from)]},{$lt:[date,new Date(options.to)]}]},...(name==='cart'?{event_type:'add_to_cart'}:{})};
    try{const rows=await db.collection(name).aggregate([{$match:filter},{$sort:{_id:-1}},{$limit:50001},{$project:{...projection,...(kind==='queries'?{delivered:{$cond:[{$isArray:'$deliveredProducts'},{$size:'$deliveredProducts'},null]}}:{})}}],{maxTimeMS:20000}).toArray();sources[name]={status:'ok',rows:Math.min(rows.length,50000),truncated:rows.length>50000};data[kind].push(...rows.slice(0,50000));}
    catch{sources[name]={status:'unavailable',rows:null,truncated:false};}
-  }));return summarizeCustomer(data,options,{sources,cards:p.productCards||[]});
+  }));return {data,sources};
  }finally{if(!deps.client)await client.close();}
+}
+export async function readCustomerAnalytics(p,args={},deps={}){
+ const options=analyticsOptions(args),{data,sources}=await readCustomerEvents(p,options,deps);return summarizeCustomer(data,options,{sources,cards:p.productCards||[]});
 }

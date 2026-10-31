@@ -1,6 +1,9 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {crawlStoreOver} from './core/crawl-store.mjs';import {workOnce} from './core/crawl-worker.mjs';
 import {crawlStatus,crawlSettings,validateSettings,startCrawl,stopCrawl} from './core/crawl-control.mjs';
+import {runCrawl,mergeCrawl} from './core/site-crawler.mjs';
+import {DEFAULT_SPEC} from './core/scraper-builder.mjs';
+import {existingProject} from './existing-client.mjs';
 
 // Minimal in-memory stand-in for the MongoDB collection API the crawl store uses.
 const get=(doc,path)=>path.split('.').reduce((v,k)=>v==null?undefined:v[k],doc);
@@ -55,6 +58,54 @@ test('errors survive the round trip as a list (URLs are not safe field names) an
 });
 test('a missing pid file never counts as a live worker',async()=>{const {alive}=await import('./core/crawl-control.mjs');assert.equal(alive(0),false);assert.equal(alive(Number('')),false);assert.equal(alive(process.pid),true);});
 
+test('restarting a completed legacy crawl refreshes existing pages, persists changes and enables merging without new products',async()=>{
+ const {store,crawls,products}=fakeStore(()=>new Date());
+ const spec={...DEFAULT_SPEC,productUrl:'^https://shop\\.example/product/([^/?#]+)'},p={...project,scraper:{status:'active',spec}};
+ const urls=['https://shop.example/product/case/','https://shop.example/product/cable/'];
+ await store.save({projectId:p.id,status:'done',queue:urls,next:2,products:{case:{sku:'case',price:100,stockStatus:'instock'},cable:{sku:'cable',price:100,stockStatus:'instock'}},errors:{[urls[0]]:'old error'}},{queue:true});
+ // This is the state left by the old worker in Shipi: the checkpoint is at the end,
+ // with an earlier merge and no revision counter on either side.
+ delete crawls.docs.get(p.id).productRevision;
+ const merged=existingProject('shop',{dbName:'shop'},urls.map((url,i)=>({id:String(i+1),name:'Product',url,price:100,stockStatus:'instock'})));
+ merged.siteCrawl={pages:2};
+ assert.equal(crawlStatus(await store.meta(p.id),crawlSettings(p),merged.siteCrawl).unmerged,0);
+ await startCrawl(p,store);assert.equal(crawls.docs.get(p.id).rescanRequested,true);
+ // A double click while queued must preserve the pending reset.
+ await startCrawl(p,store);assert.equal(crawls.docs.get(p.id).rescanRequested,true);
+ const fetched=[];
+ await workOnce(store,{owner:'studio#rescan',projectId:p.id,log:()=>{},
+  seed:async()=>({projectId:p.id,queue:urls,next:0,products:{},errors:{},robots:{rules:[]},status:'ready',startedAt:new Date().toISOString()}),
+  run:async(state,options)=>{assert.equal(state.next,0);assert.deepEqual(state.errors,{});await runCrawl(state,{...options,pause:async()=>{},fetcher:async url=>{fetched.push(url);return {status:200,headers:{get:()=>null},text:async()=>'<script type="application/ld+json">{"name":"Product","offers":{"price":49,"availability":"OutOfStock"}}</script>'};}});},
+ });
+ assert.deepEqual(fetched,urls);assert.equal(products.docs.size,2);
+ const state=await store.read(p.id);assert.equal(state.products.case.price,49);assert.equal(state.products.case.stockStatus,'outofstock');assert.equal(state.next,2);
+ const meta=await store.meta(p.id);assert.equal(meta.desired,'done');assert.equal(meta.rescanRequested,false);assert.equal(meta.productRevision,4);
+ assert.equal(crawlStatus(meta,crawlSettings(p),merged.siteCrawl).unmerged,2,'updates to previously merged products also await merging');
+ const counts=mergeCrawl(merged,state,spec);assert.equal(counts.added,0);assert.equal(counts.updated,2);assert.equal(merged.productCards[0].price,49);
+ assert.equal(crawlStatus(meta,crawlSettings(p),merged.siteCrawl).unmerged,0);
+ await store.save(state);assert.equal((await store.meta(p.id)).productRevision,4,'unchanged checkpoint saves do not create pending changes');
+ // The cache also notices updates made in place, and a fresh worker loads that value.
+ state.products.case.price=39;await store.save(state);
+ const freshStore=crawlStoreOver({crawls,products});assert.equal((await freshStore.read(p.id)).products.case.price,39);
+ assert.equal(crawlStatus(await freshStore.meta(p.id),crawlSettings(p),merged.siteCrawl).unmerged,1);
+ state.products.case.description='x'.repeat(4000);await store.save(state);const revision=state.productRevision;
+ await store.read(p.id);await store.save(state);
+ assert.equal(state.productRevision,revision,'a concurrent merge read of truncated descriptions does not make unchanged pages dirty');
+});
+
+test('discovery skips known keys with trailing slashes; an interrupted crawl resumes unless a full rescan is requested',async()=>{
+ const {store,crawls}=fakeStore(()=>new Date()),spec={...DEFAULT_SPEC,productUrl:'/product/([^/?#]+)'},p={...project,scraper:{status:'active',spec}};
+ const urls=['https://shop.example/product/known/','https://shop.example/product/new/'];
+ await store.save({projectId:p.id,status:'stopped',queue:urls,next:1,products:{known:{sku:'known'}},errors:{}},{queue:true});
+ await startCrawl(p,store);assert.equal(crawls.docs.get(p.id).rescanRequested,false);
+ await workOnce(store,{owner:'studio#resume',log:()=>{},seed:async()=>assert.fail('resume must retain its queue'),run:async state=>{assert.equal(state.next,1);state.status='stopped';}});
+ await startCrawl(p,store,{reseed:true});assert.equal(crawls.docs.get(p.id).rescanRequested,false);
+ const seed=async()=>({projectId:p.id,queue:urls,next:0,products:{},errors:{},status:'ready'});
+ await workOnce(store,{owner:'studio#discovery',log:()=>{},seed,run:async state=>{assert.deepEqual(state.queue,[urls[1]]);state.status='stopped';}});
+ await startCrawl(p,store,{rescan:true});
+ await workOnce(store,{owner:'studio#full',log:()=>{},seed,run:async state=>{assert.deepEqual(state.queue,urls);assert.equal(state.next,0);state.status='done';}});
+});
+
 test('a worker that stops making progress exits so a fresh one resumes; beats keep it alive',async()=>{
  const {watchdog}=await import('./core/crawl-worker.mjs');
  let clock=0,stalled=null;const dog=watchdog({stallMs:30*60000,everyMs:5,now:()=>clock,onStall:m=>{stalled=m;}});
@@ -77,4 +128,27 @@ test('the studio runs a tenant’s crawl itself, only that tenant, once at a tim
  assert.equal(crawlTarget({...project,scraper:{status:'draft',spec,validation:{fill:{name:1,key:1}}}}).spec,spec,'validated draft scraper');
  assert.equal(crawlTarget({...project,scraper:{status:'draft',spec,validation:{fill:{name:0.5,key:1}}}}).spec,null,'an unvalidated draft is not');
  assert.equal(scraperReady({status:'active',spec}),true);
+});
+
+test('crawl API requests a full pass after completion and forwards an explicit restart for a partial crawl',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{createStore}=await import('./store.mjs');
+ const {createServer}=await import('node:net'),probe=createServer().listen(0,'127.0.0.1');await new Promise(r=>probe.once('listening',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+ const root=await mkdtemp(tmpdir()+'/crawl-api-'),previous={data:process.env.STUDIO_DATA_DIR,mode:process.env.STUDIO_CRAWL_WORKER,port:process.env.PORT};
+ process.env.STUDIO_DATA_DIR=root;process.env.STUDIO_CRAWL_WORKER='remote';process.env.PORT=String(port);
+ const {app}=await import('./server.mjs'),{store,crawls}=fakeStore(()=>new Date());app.locals.crawlStore=store;
+ const server=app.listen(port,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+ try{
+  await createStore(root).save({...project,name:'Shop',revisions:[],updatedAt:new Date().toISOString()});
+  await store.save({projectId:project.id,status:'done',queue:['https://shop.example/123456'],next:1,products:{123456:{sku:'123456'}},errors:{}},{queue:true});
+  const base='http://127.0.0.1:'+server.address().port,headers={Host:'127.0.0.1:'+(process.env.PORT||process.env.STUDIO_PORT||4320),'Content-Type':'application/json'};
+  headers['X-Studio-Token']=(await (await fetch(base+'/api/session',{headers})).json()).token;
+  const post=async(action,body={})=>{const r=await fetch(base+'/api/projects/'+project.id+'/crawl/'+action,{method:'POST',headers,body:JSON.stringify(body)});assert.equal(r.status,200);return r.json();};
+  assert.equal((await post('start')).status,'waiting');assert.equal(crawls.docs.get(project.id).rescanRequested,true);
+  await post('stop');crawls.docs.get(project.id).status='stopped';crawls.docs.get(project.id).next=0;
+  await post('start',{rescan:true});assert.equal(crawls.docs.get(project.id).rescanRequested,true);
+  await post('stop');await post('start',{reseed:true});assert.equal(crawls.docs.get(project.id).rescanRequested,false);assert.equal(crawls.docs.get(project.id).reseedRequested,true);
+ }finally{
+  delete app.locals.crawlStore;await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});
+  for(const [key,value] of [['STUDIO_DATA_DIR',previous.data],['STUDIO_CRAWL_WORKER',previous.mode],['PORT',previous.port]])if(value===undefined)delete process.env[key];else process.env[key]=value;
+ }
 });

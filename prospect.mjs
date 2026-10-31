@@ -1,16 +1,18 @@
 import 'dotenv/config';
 import {mkdir,readFile,writeFile,readdir,rename} from 'node:fs/promises';
 import {resolve} from 'node:path';
-import {storesFromIndex,indexPageUrl,auditStore,pageFetcher,bareHost} from './core/prospect.mjs';
+import {storesFromIndex,indexPageUrl,parseTranco,storeSignals,isShop,auditStore,pageFetcher,bareHost} from './core/prospect.mjs';
 import {askProcessing} from './model.mjs';
 
 // Lead finder for Israeli stores with weak on-site search.
-//   node prospect.mjs discover [--pages 40] [--crawl CC-MAIN-2026-34] [--domain co.il]   find stores (resumable)
-//   node prospect.mjs audit [--limit 20] [--min-products 20] [--threshold 70] [--no-ai] [--force] [domain ...]
+//   node prospect.mjs tranco [--top 1000000] [--parallel 8]                               Israeli sites by traffic rank → which are stores
+//   node prospect.mjs discover [--pages 40] [--crawl CC-MAIN-2026-34] [--domain co.il]   more stores from Common Crawl (resumable)
+//   node prospect.mjs audit [--limit 20] [--source ranked|crawl|all] [--min-products 20] [--threshold 70] [--no-ai] [--force] [domain ...]
+//     ranked stores go first, most visited first; then Common Crawl stores by catalog size
 //   node prospect.mjs report [--threshold 70]                                              → report.html + leads.csv
 // Everything lands in data/prospects/ (git-ignored: it holds business contact details).
 
-const DIR=resolve(process.env.PROSPECT_DIR||'data/prospects'),AUDITS=DIR+'/audits',STORES=DIR+'/stores.json';
+const DIR=resolve(process.env.PROSPECT_DIR||'data/prospects'),AUDITS=DIR+'/audits',STORES=DIR+'/stores.json',RANKED=DIR+'/ranked.json';
 const argv=process.argv.slice(2),cmd=argv[0],flags={},rest=[];
 for(let i=1;i<argv.length;i++){if(argv[i].startsWith('--')){const k=argv[i].slice(2);flags[k]=argv[i+1]&&!argv[i+1].startsWith('--')?argv[++i]:true;}else rest.push(argv[i]);}
 const num=(k,d)=>flags[k]===undefined?d:Number(flags[k]);
@@ -45,22 +47,52 @@ async function discover(){
  console.log(`נמצאו ${map.size} אתרים עם דפי מוצר (${big} עם 20+ דפי מוצר באינדקס). הצעד הבא: node prospect.mjs audit`);
 }
 
+// Tranco's daily top-million list (aggregated from Chrome UX Report, Cloudflare Radar, Umbrella, Majestic, Farsight):
+// keep Israeli domains, then read each home page once to tell online stores from news, banks and services.
+async function tranco(){
+ await mkdir(DIR,{recursive:true});
+ const meta=await (await fetch('https://tranco-list.eu/api/lists/date/latest',{signal:AbortSignal.timeout(60000)})).json();
+ const state=await readJson(RANKED,{listId:null,sites:{}});
+ const list=parseTranco(await (await fetch(meta.download,{signal:AbortSignal.timeout(300000)})).text()).filter(s=>s.rank<=num('top',1000000));
+ for(const s of list)state.sites[s.host]={...state.sites[s.host],host:s.host,rank:s.rank};
+ state.listId=meta.list_id;state.listDate=meta.created_on;await saveJson(RANKED,state);
+ const todo=list.filter(s=>state.sites[s.host].store===undefined||flags.force),get=pageFetcher(undefined,{timeoutMs:20000});let n=0,stores=0;
+ console.log(`Tranco ${meta.list_id}: ${list.length} אתרים ישראליים, בודק ${todo.length} דפי בית`);
+ const worker=async()=>{for(let s;(s=todo.shift());){
+  const site=state.sites[s.host];
+  try{let r=await get('https://'+s.host+'/');if(r.offsite){site.movedTo=bareHost(new URL(r.url).hostname);r=await get(r.url);}
+   if(r.status!==200||r.blocked){site.store=null;site.note=r.blocked?'הגנת בוטים':'HTTP '+r.status;}else Object.assign(site,storeSignals(r.text));}
+  catch(e){site.store=null;site.note=e.message;}
+  site.checkedAt=new Date().toISOString();if(site.store)stores++;
+  if(++n%25===0){await saveJson(RANKED,state);console.log(`  ${n} נבדקו, ${stores} חנויות`);}
+ }};
+ await Promise.all(Array.from({length:num('parallel',8)},worker));await saveJson(RANKED,state);
+ const all=Object.values(state.sites).filter(s=>s.store).sort((a,b)=>a.rank-b.rank);
+ console.log(`${all.length} חנויות מדורגות. המובילות: ${all.slice(0,15).map(s=>s.host).join(', ')}\nהצעד הבא: node prospect.mjs audit`);
+}
+
 async function audit(){
  await mkdir(AUDITS,{recursive:true});
  const done=new Set((await readdir(AUDITS)).map(f=>f.replace(/\.json$/,'')));
  let hosts=rest.map(d=>bareHost(new URL(/^https?:/.test(d)?d:'https://'+d).hostname));
  if(!hosts.length){
-  const state=await readJson(STORES,null);if(!state)throw Error('אין רשימת חנויות. הריצו קודם: node prospect.mjs discover');
-  hosts=Object.values(state.stores).filter(s=>s.productUrls>=num('min-products',20)&&(flags.force||!done.has(safeName(s.host)))).sort((a,b)=>b.productUrls-a.productUrls).map(s=>s.host);
-  hosts=hosts.slice(0,num('limit',20));
+  const source=flags.source||'all',ranked=await readJson(RANKED,{sites:{}}),crawl=await readJson(STORES,{stores:{}});
+  const fresh=h=>flags.force||!done.has(safeName(h));
+  const NOT=/\.(ac|gov|muni|idf|k12|net)\.il$/i;
+  const a=source==='crawl'?[]:Object.values(ranked.sites).filter(s=>s.store&&isShop(s)&&!NOT.test(s.host)).sort((x,y)=>x.rank-y.rank).map(s=>s.movedTo||s.host);
+  const b=source==='ranked'?[]:Object.values(crawl.stores).filter(s=>s.productUrls>=num('min-products',20)).sort((x,y)=>y.productUrls-x.productUrls).map(s=>s.host);
+  hosts=[...new Set([...a,...b])].filter(fresh).slice(0,num('limit',20));
+  if(!hosts.length)throw Error('אין חנויות לבדיקה. הריצו קודם: node prospect.mjs tranco (או discover)');
  }
  const ask=flags['no-ai']?null:(process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY)?askProcessing:null;
  if(!ask)console.log('בלי מודל: שאילתות מהתפריט ומהקטלוג ושיפוט לפי התאמת מילים (פחות מדויק)');
+ const rankOf=new Map(Object.values((await readJson(RANKED,{sites:{}})).sites).flatMap(s=>[[s.host,s.rank],[s.movedTo,s.rank]]).filter(([h])=>h));
  const get=pageFetcher(),threshold=num('threshold',70),queue=[...hosts];let n=0;
  const worker=async()=>{for(let host;(host=queue.shift());){
   const started=Date.now();let a;
   let timer;
   try{a=await Promise.race([auditStore(host,{get,ask,threshold,delayMs:num('delay',1500)}),new Promise((_,fail)=>{timer=setTimeout(()=>fail(Error('הבדיקה חרגה מ־6 דקות')),num('store-minutes',6)*60000);})]).finally(()=>clearTimeout(timer));}catch(e){a={host,status:'error',note:e.message,auditedAt:new Date().toISOString()};}
+  const r=rankOf.get(host)||rankOf.get(a.host);if(r)a.rank=r;
   await saveJson(`${AUDITS}/${safeName(a.host||host)}.json`,a);
   const line=a.status==='audited'?`ציון ${a.score} (${a.grade})${a.confidence==='low'?' · ביטחון נמוך':''}${a.lead?' · ליד':''}${a.providers?.length?' · '+a.providers.join(','):''}`:`${a.status}: ${a.note||''}`;
   console.log(`[${++n}/${hosts.length}] ${host} · ${a.platform||''} · ${line} · ${Math.round((Date.now()-started)/1000)}s`);
@@ -75,13 +107,13 @@ async function report(){
  const threshold=num('threshold',70),files=(await readdir(AUDITS).catch(()=>[])).filter(f=>f.endsWith('.json'));
  const audits=(await Promise.all(files.map(f=>readJson(`${AUDITS}/${f}`,null)))).filter(Boolean);
  for(const a of audits)if(a.status==='audited')a.lead=a.score<threshold&&a.confidence!=='low';
- const scored=audits.filter(a=>a.status==='audited').sort((a,b)=>b.lead-a.lead||a.score-b.score),other=audits.filter(a=>a.status!=='audited');
+ const scored=audits.filter(a=>a.status==='audited').sort((a,b)=>b.lead-a.lead||(a.rank||1e9)-(b.rank||1e9)||a.score-b.score),other=audits.filter(a=>a.status!=='audited');
  const leads=scored.filter(a=>a.lead);
- const rows=[['host','title','platform','search_vendor','score','grade','zero_results_%','top_fixes','emails','phones','whatsapp','company_id','facebook','instagram','linkedin','audited_at']];
- for(const a of leads){const c=a.contacts||{};rows.push([a.host,a.title,a.platform,(a.providers||[]).join(' '),a.score,a.grade,a.zeroRate,a.fixes.slice(0,3).map(f=>f.label).join(' | '),(c.emails||[]).join(' '),(c.phones||[]).join(' '),(c.whatsapp||[]).join(' '),c.companyId,c.social?.facebook,c.social?.instagram,c.social?.linkedin,a.auditedAt]);}
+ const rows=[['host','traffic_rank','title','platform','search_vendor','score','grade','zero_results_%','top_fixes','emails','phones','whatsapp','company_id','facebook','instagram','linkedin','audited_at']];
+ for(const a of leads){const c=a.contacts||{};rows.push([a.host,a.rank||'',a.title,a.platform,(a.providers||[]).join(' '),a.score,a.grade,a.zeroRate,a.fixes.slice(0,3).map(f=>f.label).join(' | '),(c.emails||[]).join(' '),(c.phones||[]).join(' '),(c.whatsapp||[]).join(' '),c.companyId,c.social?.facebook,c.social?.instagram,c.social?.linkedin,a.auditedAt]);}
  await writeFile(DIR+'/leads.csv','﻿'+rows.map(r=>r.map(csvCell).join(',')).join('\n'),{mode:0o600});
  const contact=c=>!c?'':[...(c.emails||[]).map(e=>`<a href="mailto:${esc(e)}">${esc(e)}</a>`),...(c.phones||[]).map(p=>`<a href="tel:${esc(p)}">${esc(p)}</a>`),...(c.whatsapp||[]).map(w=>`<a href="https://wa.me/${esc(w.replace(/^0/,'972').replace(/\D/g,''))}">וואטסאפ ${esc(w)}</a>`),...Object.entries(c.social||{}).map(([k,v])=>`<a href="${esc(v)}">${k}</a>`),c.companyId?`ח.פ. ${esc(c.companyId)}`:''].filter(Boolean).join(' · ');
- const detail=a=>`<details><summary><span class="score s${a.grade==='טוב'?'g':a.grade==='בינוני'?'m':'b'}">${a.score}</span><b>${esc(a.title)}</b> <a href="${esc(a.origin)}">${esc(a.host)}</a> <span class="muted">${esc(a.platform)}${a.providers?.length?' · '+esc(a.providers.join(', ')):''} · ${a.zeroRate}% בלי תוצאות${a.confidence==='low'?' · ביטחון נמוך':''}</span>${a.lead?'<span class="lead">ליד</span>':''}</summary>
+ const detail=a=>`<details><summary><span class="score s${a.grade==='טוב'?'g':a.grade==='בינוני'?'m':'b'}">${a.score}</span><b>${esc(a.title)}</b> <a href="${esc(a.origin)}">${esc(a.host)}</a> <span class="muted">${a.rank?`דירוג תנועה ${a.rank.toLocaleString('he-IL')} · `:''}${esc(a.platform)}${a.providers?.length?' · '+esc(a.providers.join(', ')):''} · ${a.zeroRate}% בלי תוצאות${a.confidence==='low'?' · ביטחון נמוך':''}</span>${a.lead?'<span class="lead">ליד</span>':''}</summary>
 ${a.lead?`<p class="contacts">${contact(a.contacts)||'<span class="muted">לא נמצאו פרטי קשר באתר</span>'}</p>`:''}
 ${a.fixes.length?`<h4>מה לתקן</h4><ol>${a.fixes.map(f=>`<li><b>${esc(f.label)}</b> — ${esc(f.fix)} <span class="muted">לדוגמה: ${f.examples.map(q=>'"'+esc(q)+'"').join(', ')}</span></li>`).join('')}</ol>`:''}
 <h4>החיפושים שנבדקו</h4><table><tr><th>חיפוש</th><th>סוג</th><th>תוצאות</th><th></th><th>תוצאות ראשונות</th></tr>${a.results.map(r=>`<tr class="${r.pass===false?'fail':''}"><td><a href="${esc((a.shopperUrl||a.searchUrl)?.replace('{q}',encodeURIComponent(r.q)))}">${esc(r.q)}</a>${r.of?`<div class="muted">במקום "${esc(r.of)}"</div>`:''}</td><td>${esc(r.kind)}</td><td>${r.measurable?r.count:'—'}</td><td>${r.pass===null?'—':r.pass?'✓':'✗ '+esc(r.reason||'')}</td><td class="muted">${esc(r.titles.slice(0,3).join(' · '))}</td></tr>`).join('')}</table></details>`;
@@ -106,6 +138,6 @@ h2{font-size:18px;margin-top:28px}li{margin:4px 0}
  console.log(`${leads.length} לידים מתוך ${scored.length} אתרים עם ציון (${other.length} לא נמדדו)\n${DIR}/report.html\n${DIR}/leads.csv`);
 }
 
-const commands={discover,audit,report};
-if(!commands[cmd]){console.log('שימוש: node prospect.mjs discover|audit|report  (פרטים בראש הקובץ)');process.exit(1);}
+const commands={tranco,discover,audit,report};
+if(!commands[cmd]){console.log('שימוש: node prospect.mjs tranco|discover|audit|report  (פרטים בראש הקובץ)');process.exit(1);}
 await commands[cmd]();

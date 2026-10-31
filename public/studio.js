@@ -1,6 +1,6 @@
 import {createApi} from './api.js';
-import {pluginWorkspacePanel} from './plugin-workspace.js';
-import {createPluginBuilder} from './plugin-builder.js';
+import {pluginAgentPanel} from './plugin-agent.js';
+import {renderDelivery} from './plugin-delivery.js';
 import {renderTakeover as takeoverPanel} from './takeover.js';
 import {demoUrl} from './demo-url.js';
 
@@ -96,13 +96,22 @@ function buildCard(){
  const run=project?.buildRun;if(!run||project.revisions?.length&&!LIVE.includes(run.status))return null;
  const labels={queued:'בתור',running:'בונה',paused:'מושהה',failed:'נכשל',partial:'הסתיים עם חוסרים',cancelled:'בוטל',ready:'מוכן'};
  const card=el('div',{class:'build-card',id:'build-card'},el('h3',{},`בניית הלקוח — ${labels[run.status]||run.status}`),el('p',{class:'meta'},run.message||''),
-  el('ul',{class:'stages'},run.stages.map(s=>el('li',{class:s.status},el('span',{},s.label),el('small',{},s.status==='completed'||s.status==='running'?(s.total?`${(s.done||0).toLocaleString('he-IL')} / ${s.total.toLocaleString('he-IL')}`:s.done?s.done.toLocaleString('he-IL'):''):''))) ));
+  el('ul',{class:'stages'},run.stages.map(s=>el('li',{class:s.status},el('span',{},s.label),
+   s.status==='skipped'?el('small',{},'דולג'):el('small',{},s.status==='completed'||s.status==='running'?(s.total?`${(s.done||0).toLocaleString('he-IL')} / ${s.total.toLocaleString('he-IL')}`:s.done?s.done.toLocaleString('he-IL'):''):''),
+   skipButton(run,s))) ));
  if(['paused','failed','partial','cancelled'].includes(run.status)){
   const o=run.options||{},more={maxFetches:Math.min((o.maxFetches||10000)*2,1000000),maxModelCalls:Math.min((o.maxModelCalls||750)*2,100000),maxMinutes:Math.min((o.maxMinutes||120)*2,10080)};
   card.append(el('div',{class:'actions'},el('button',{type:'button',class:'primary',onclick:async()=>{try{await api('/projects/'+project.id+'/build/control',{action:'resume',limits:/מגבלת/.test(run.message||'')?more:undefined});await refreshBuild();}catch(err){toast(err.message);}}},'המשך בנייה'),
    el('a',{class:'button ghost',href:'/index.html?tenant='+project.id},'פתח בממשק המתקדם')));
  }
  return card;
+}
+// Research, enrichment and tagging can wait for a later build; the run goes on with what it already has.
+const SKIPPABLE=['research','enrich','tags'];
+function skipButton(run,s){
+ if(!SKIPPABLE.includes(s.key)||!['pending','running','failed'].includes(s.status)||['ready','activated'].includes(run.status))return null;
+ const queued=run.options?.skipStages?.includes(s.key);
+ return el('button',{type:'button',class:'link skip',disabled:queued,onclick:async e=>{e.target.disabled=true;try{await api('/projects/'+project.id+'/build/control',{action:'skip',stage:s.key});toast(LIVE.includes(run.status)?'השלב ידולג בנקודת השמירה הבאה':'השלב ידולג בהמשך הבנייה');await refreshBuild();}catch(err){e.target.disabled=false;toast(err.message);}}},queued?'ידולג':'דלג');
 }
 async function refreshBuild(){
  clearTimeout(refreshBuild.timer);if(!project)return;const id=project.id;
@@ -114,14 +123,31 @@ async function refreshBuild(){
  if(LIVE.includes(project.buildRun?.status))refreshBuild.timer=setTimeout(refreshBuild,4000);
 }
 
+// Existing clients whose saved products carry no links open with a placeholder (*.invalid) address until one is set.
+function siteUrl(p){try{return p?.url&&!new URL(p.url).hostname.endsWith('.invalid')?p.url:null;}catch{return null;}}
+function renderMeta(){
+ const meta=$('client-meta');meta.replaceChildren();if(!project)return;
+ const url=siteUrl(project),parts=[project.catalog?.count?`${project.catalog.count.toLocaleString('he-IL')} מוצרים`:'אין קטלוג שמור',project.existingClient?`מסד ${project.existingClient.dbName}`:null].filter(Boolean);
+ meta.append(parts.join(' · '),parts.length?' · ':'');
+ if(url)meta.append(el('a',{href:url,target:'_blank',rel:'noopener',dir:'ltr'},new URL(url).hostname),' ');
+ meta.append(el('button',{type:'button',class:'link',onclick:editUrl},url?'ערוך כתובת':'הוסף כתובת אתר'));
+}
+function editUrl(){
+ const meta=$('client-meta'),input=el('input',{type:'text',dir:'ltr',required:'',maxlength:'500',placeholder:'https://your-store.com',value:siteUrl(project)||''});
+ const form=el('form',{class:'url-edit'},input,el('button',{class:'primary'},'שמור'),el('button',{type:'button',class:'ghost',onclick:renderMeta},'ביטול'));
+ form.onsubmit=async e=>{e.preventDefault();const id=project.id;form.querySelectorAll('button,input').forEach(x=>x.disabled=true);
+  try{const next=await api('/projects/'+id+'/url',{url:input.value.trim()});if(project?.id!==id)return;project=next;toast('כתובת האתר נשמרה');renderMeta();setAuditButtons();loadClients();}
+  catch(err){toast(err.message);form.querySelectorAll('button,input').forEach(x=>x.disabled=false);}};
+ meta.replaceChildren(form);input.focus();input.select();
+}
 function renderClient(){
  const ready=!!(project?.revisions?.length&&project?.catalog?.count);
  $('client-name').textContent=project?.name||'בחר לקוח';
- $('client-meta').textContent=project?[project.catalog?.count?`${project.catalog.count.toLocaleString('he-IL')} מוצרים`:'אין קטלוג שמור',project.existingClient?`מסד ${project.existingClient.dbName}`:project.url].filter(Boolean).join(' · '):'';
+ renderMeta();
  $('client-version').hidden=!project?.revisions?.length;$('client-version').textContent='גרסה '+(project?.revisions?.length||0);
  $('model').textContent=project?.studioModel?'מודל: '+project.studioModel:'';
  $('message').disabled=false;$('send').disabled=false;$('query').disabled=false;$('live-search').querySelector('button').disabled=false;
- if(!document.querySelector('[data-pane="performance"]').hidden)renderPerformance();renderThread();renderVersions();renderConcierge();setAuditButtons();if(!document.querySelector('[data-pane="crawler"]').hidden)renderCrawler();if(!document.querySelector('[data-pane="baseline"]').hidden)renderBaseline();if(!document.querySelector('[data-pane="processing"]').hidden)renderProcessing();if(!document.querySelector('[data-pane="takeover"]').hidden)renderTakeover();
+ if(!document.querySelector('[data-pane="performance"]').hidden)renderPerformance();renderThread();renderVersions();renderConcierge();renderPlugin();setAuditButtons();if(!document.querySelector('[data-pane="crawler"]').hidden)renderCrawler();if(!document.querySelector('[data-pane="baseline"]').hidden)renderBaseline();if(!document.querySelector('[data-pane="processing"]').hidden)renderProcessing();if(!document.querySelector('[data-pane="takeover"]').hidden)renderTakeover();
  const card=buildCard();if(card){$('thread').append(card);if(LIVE.includes(project.buildRun.status)){clearTimeout(refreshBuild.timer);refreshBuild.timer=setTimeout(refreshBuild,4000);}}
  else if(project&&!ready)$('thread').append(el('div',{class:'notice'},['needs_source','failed','stopped'].includes(project.onboarding?.status)?['הקליטה האוטומטית לא הושלמה',project.onboarding.error?': '+project.onboarding.error:'','. ',el('button',{type:'button',class:'link',onclick:async()=>{try{await api('/projects/'+project.id+'/onboard/build',{});await refreshBuild();}catch(err){toast(err.message);}}},'נסה לבנות שוב'),' או חבר פיד ב',el('a',{href:'/index.html?tenant='+project.id},'ממשק המתקדם'),'.']:['ללקוח הזה עדיין אין קטלוג ואינדקס שמורים. בנה אותו ב',el('a',{href:'/index.html?tenant='+project.id},'ממשק המתקדם'),' ואז חזור לכאן.']));
 }
@@ -170,7 +196,7 @@ async function streamTurn(label,path,body){
    else if(e.type==='tool'){steps.hidden=false;steps.append(stepItem({id:e.id,name:e.name,text:toolLabel(e)}));}
    else if(e.type==='tool_done'){const old=steps.querySelector(`[data-id="${e.id}"]`),item=stepItem(e);old?old.replaceWith(item):steps.append(item);}
    else if(e.type==='message'){status.remove();bodyEl.append(markdown(e.text));if(e.changes?.length)bodyEl.append(changeList(e.changes,e.version));}
-   else if(e.type==='done'){if(project?.id===id){project=e.project;renderVersions();renderConcierge();$('client-version').textContent='גרסה '+project.revisions.length;}loadClients();}
+   else if(e.type==='done'){if(project?.id===id){project=e.project;renderVersions();renderConcierge();renderPlugin();$('client-version').textContent='גרסה '+project.revisions.length;}loadClients();}
    else if(e.type==='error'){status.remove();bodyEl.append(el('p',{class:'error'},e.message));}
    else if(e.type==='stopped'){status.remove();bodyEl.append(el('p',{class:'meta'},e.message));}
    follow();
@@ -182,10 +208,10 @@ async function streamTurn(label,path,body){
   else bodyEl.append(el('p',{class:'error'},err.message));}
  finally{endRun();status.remove();busy=false;setAuditButtons();$('message').focus();}
 }
-function setDemoButton(){const b=$('demo-site');b.disabled=!project?.url||!project?.revisions?.length;b.title=b.disabled?'דורש לקוח עם כתובת אתר ומודול חיפוש':'פותח את האתר של הלקוח כמו שהוא, עם החיפוש שלנו במקום החיפוש שלהם';}
+function setDemoButton(){const b=$('demo-site');b.disabled=!siteUrl(project)||!project?.revisions?.length;b.title=b.disabled?'דורש לקוח עם כתובת אתר ומודול חיפוש':'פותח את האתר של הלקוח כמו שהוא, עם החיפוש שלנו במקום החיפוש שלהם';}
 // With a takeover config, the demo is the store as it is plus the real storefront script (loader + engine).
 $('demo-site').onclick=()=>{if(project)window.open(demoUrl(project.id,'/',project.takeoverReady?'engine':null),'_blank','noopener');};
-function setAuditButtons(){setDemoButton();$('delete-client').hidden=!project;$('delete-client').disabled=busy;const ok=!busy&&!!project?.catalog?.count&&!!project?.existingClient;for(const b of ['audit-check','audit-fix'])$(b).disabled=!ok;$('audit-check').title=project&&!project.existingClient?'דורש לקוח קיים עם נתוני חיפוש במסד':'בודק את החיפושים המובילים, שהחזירו 0 תוצאות או שלא נלחצו, מול הכללים הנוכחיים';}
+function setAuditButtons(){setDemoButton();$('delete-client').hidden=!project;$('delete-client').disabled=busy;const ok=!busy&&!!project?.catalog?.count&&!!project?.existingClient;for(const b of ['audit-check','audit-fix','audit-week'])$(b).disabled=!ok;$('audit-check').title=project&&!project.existingClient?'דורש לקוח קיים עם נתוני חיפוש במסד':'בודק את החיפושים הפופולריים ביותר, הממירים ביותר והכי פחות ממירים (וגם 0 תוצאות וללא קליקים) מול הכללים הנוכחיים';}
 $('delete-client').onclick=async()=>{
  if(busy||!project)return;const name=project.name;
  const typed=prompt(`מחיקת הלקוח ״${name}״ מהסטודיו: הקטלוג המקומי, הכללים, הגרסאות, הבניות ולוג האייג׳נט יועברו לתיקיית האשפה של השרת. המסד של הלקוח עצמו לא נפגע.\n\nלאישור, הקלד את שם הלקוח:`);
@@ -196,8 +222,9 @@ $('delete-client').onclick=async()=>{
   project=null;renderClient();setAuditButtons();await loadClients();toast(`הלקוח ״${name}״ נמחק`);
  }catch(err){toast(err.message);}
 };
-$('audit-check').onclick=()=>{if(!busy&&project)streamTurn('בדיקה אוטומטית של החיפושים המובילים','/projects/'+project.id+'/audit',{fix:false});};
-$('audit-fix').onclick=()=>{if(!busy&&project&&confirm('לבדוק את החיפושים המובילים ולתקן אוטומטית עד 5 ממצאים? נשמרים רק תיקונים שעברו אימות, כל אחד כגרסה שאפשר לשחזר.'))streamTurn('בדיקה ותיקון אוטומטי של החיפושים המובילים','/projects/'+project.id+'/audit',{fix:true});};
+$('audit-check').onclick=()=>{if(!busy&&project)streamTurn('בדיקה אוטומטית של החיפושים הפופולריים, הממירים והפחות ממירים','/projects/'+project.id+'/audit',{fix:false});};
+$('audit-week').onclick=()=>{if(!busy&&project&&confirm('לסרוק את כל החיפושים של 7 הימים האחרונים, להתמקד באלה שלא הובילו לקליק או לרכישה, ולתקן אוטומטית עד 5 ממצאים? נשמרים רק תיקונים שעברו אימות, כל אחד כגרסה שאפשר לשחזר. שאילתות שנבדקו בשבוע האחרון ונמצאו תקינות לא נבדקות שוב.'))streamTurn('בדיקה ותיקון לפי חיפושי השבוע האחרון — דגש על חיפושים שלא מובילים לקליק או לרכישה','/projects/'+project.id+'/audit',{fix:true,source:'week'});};
+$('audit-fix').onclick=()=>{if(!busy&&project&&confirm('לבדוק את החיפושים הפופולריים, הממירים והפחות ממירים ולתקן אוטומטית עד 5 ממצאים? נשמרים רק תיקונים שעברו אימות, כל אחד כגרסה שאפשר לשחזר.'))streamTurn('בדיקה ותיקון אוטומטי של החיפושים הפופולריים, הממירים והפחות ממירים','/projects/'+project.id+'/audit',{fix:true});};
 
 async function send(message){
  if(busy)return;
@@ -211,7 +238,7 @@ async function send(message){
  $('message').value='';const context=attached;attached=null;renderAttached();
  await streamTurn(message,'/projects/'+project.id+'/studio',{message,context});
 }
-const TOOL_NAMES={overview:'סוקר את הקטלוג',analyze:'מכיר את הלקוח',search_performance:'מנתח ביצועי חיפוש',customer_analytics:'קורא את משפך הלקוחות',shopper_activity:'קורא פעילות לקוחות',find_products:'מאתר מוצרים',get_product:'פותח מוצר',categories:'בודק קטגוריות',fields:'בודק שדות',field_values:'קורא ערכי שדה',facet:'בודק אילו סוגי מוצרים חוזרים',audit_query:'בודק חיפוש',shopper_clicks:'בודק על מה קונים לחצו',crawl_status:'בודק את הסורק',merge_crawl:'ממזג את סריקת האתר',audit_fix:'מתקן',verify:'מאמת את התיקון בחיפוש חוזר',search:'מריץ חיפוש',inspect_query:'מאבחן חיפוש',search_analytics:'קורא נתוני חיפושים',list_rules:'קורא כללי חיפוש',add_spelling:'מוסיף תיקון כתיב',add_synonyms:'מוסיף מילים נרדפות',link_term:'מקשר מונח למוצרים',remove_rule:'מסיר כלל',configure_search:'משנה הגדרות',configure_concierge:'מגדיר קונסיירז׳',preview_concierge:'בודק מתי הקונסיירז׳ נפתח',db_fields:'קורא שדות מהמסד',db_search:'מחפש במסד',db_import_field:'מייבא שדה מהמסד',refresh_source_fields:'מרענן שדות מקור',process_field:'מעבד שדה',undo_processing:'מבטל עיבוד',add_example:'שומר בדיקה קבועה',check_examples:'מריץ בדיקות קבועות',list_versions:'קורא גרסאות',rollback:'משחזר גרסה'};
+const TOOL_NAMES={overview:'סוקר את הקטלוג',suggest:'בודק הצעות בהקלדה',analyze:'מכיר את הלקוח',search_performance:'מנתח ביצועי חיפוש',customer_analytics:'קורא את משפך הלקוחות',shopper_activity:'קורא פעילות לקוחות',weekly_scan:'סורק את חיפושי השבוע',find_products:'מאתר מוצרים',get_product:'פותח מוצר',categories:'בודק קטגוריות',fields:'בודק שדות',field_values:'קורא ערכי שדה',facet:'בודק אילו סוגי מוצרים חוזרים',audit_query:'בודק חיפוש',shopper_clicks:'בודק על מה קונים לחצו',crawl_status:'בודק את הסורק',merge_crawl:'ממזג את סריקת האתר',audit_fix:'מתקן',verify:'מאמת את התיקון בחיפוש חוזר',search:'מריץ חיפוש',inspect_query:'מאבחן חיפוש',search_analytics:'קורא נתוני חיפושים',list_rules:'קורא כללי חיפוש',add_spelling:'מוסיף תיקון כתיב',add_synonyms:'מוסיף מילים נרדפות',link_term:'מקשר מונח למוצרים',remove_rule:'מסיר כלל',configure_search:'משנה הגדרות',configure_concierge:'מגדיר קונסיירז׳',preview_concierge:'בודק מתי הקונסיירז׳ נפתח',db_fields:'קורא שדות מהמסד',db_search:'מחפש במסד',db_import_field:'מייבא שדה מהמסד',refresh_source_fields:'מרענן שדות מקור',process_field:'מעבד שדה',undo_processing:'מבטל עיבוד',add_example:'שומר בדיקה קבועה',check_examples:'מריץ בדיקות קבועות',list_versions:'קורא גרסאות',rollback:'משחזר גרסה'};
 function toolLabel(e){const hint=e.args?.queries?.join(' · ')||e.args?.query||e.args?.contains||e.args?.field||e.args?.from||e.args?.term||'';return (TOOL_NAMES[e.name]||e.name)+(hint?` ״${hint}״`:'')+'…';}
 $('composer').onsubmit=e=>{e.preventDefault();if(running){running.abort();return;}const m=$('message').value.trim();if(m)send(m);};
 $('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!running)$('composer').requestSubmit();}};
@@ -222,70 +249,134 @@ function showPanel(name){
  for(const b of document.querySelectorAll('.panel-switch button'))b.classList.toggle('on',b.dataset.show===name);
 }
 for(const b of document.querySelectorAll('.panel-switch button'))b.onclick=()=>showPanel(b.dataset.show);
-function renderTakeover(){const root=$('takeover');if(root&&project)takeoverPanel({root,project,api,streamInto,el,toast,fill,loading});}
+function renderTakeover(){const root=$('takeover');if(root&&project)takeoverPanel({root,project,api,download:(path,body)=>connection.request(path,body,true),streamInto,el,toast,fill,loading});}
 // Wide side panel: the chat narrows so panels like the takeover get room. The takeover opens wide unless the operator
 // narrowed it before; the choice is remembered per browser.
 const wideKey='studio-side-wide';
 const setWide=on=>{document.body.classList.toggle('side-wide',on);const b=document.querySelector('.side-toggle');if(b)b.textContent=on?'צמצם פאנל':'הרחב פאנל';};
 {const t=document.querySelector('.tabs');if(t){t.append(el('button',{type:'button',class:'side-toggle',onclick:()=>{const on=!document.body.classList.contains('side-wide');setWide(on);try{localStorage.setItem(wideKey,on?'1':'0');}catch{}}},'הרחב פאנל'));try{if(localStorage.getItem(wideKey)==='1')setWide(true);}catch{}}}
-function tab(name){if(name==='takeover'){let pref=null;try{pref=localStorage.getItem(wideKey);}catch{}if(pref!=='0')setWide(true);setTimeout(renderTakeover);}if(name==='performance')setTimeout(renderPerformance);if(name==='crawler')setTimeout(renderCrawler);if(name==='processing')setTimeout(renderProcessing);if(name==='baseline')setTimeout(renderBaseline);if(matchMedia('(max-width: 1100px)').matches)showPanel('side');for(const b of document.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',String(b.dataset.tab===name));for(const p of document.querySelectorAll('[data-pane]'))p.hidden=p.dataset.pane!==name;}
+function tab(name){if(name==='takeover'){let pref=null;try{pref=localStorage.getItem(wideKey);}catch{}if(pref!=='0')setWide(true);setTimeout(renderTakeover);}if(name==='plugin')renderPlugin();if(name==='performance')setTimeout(renderPerformance);if(name==='crawler')setTimeout(renderCrawler);if(name==='processing')setTimeout(renderProcessing);if(name==='baseline')setTimeout(renderBaseline);if(matchMedia('(max-width: 1100px)').matches)showPanel('side');for(const b of document.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',String(b.dataset.tab===name));for(const p of document.querySelectorAll('[data-pane]'))p.hidden=p.dataset.pane!==name;}
 for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);
 
-let lastSearch=null;
+let lastSearch=null,searchRun=0;
 async function runSearch(query){
  if(!project)return;tab('search');$('query').value=query;$('search-meta').textContent='מחפש…';$('results').replaceChildren();$('report').hidden=true;
- const id=project.id;
- try{const r=await api('/projects/'+id+'/search',{query,limit:24});if(project?.id!==id)return;lastSearch={query,r};
+ const id=project.id,run=++searchRun,concierge=project.concierge?.enabled===true;showConciergeTrigger(null);suggestRun++;clearTimeout(suggestTimer);
+ // The classifier reads only the query, so it answers while the search is still running; a concierge-type query opens
+ // the chat and starts its turn right away instead of waiting for the product grid.
+ const early=concierge?api('/projects/'+id+'/concierge/classify',{query}).then(c=>{
+  if(project?.id!==id||run!==searchRun||!c.open)return c;
+  if(c.trigger.display==='auto')openShopperPreview(c.trigger,query);else showConciergeTrigger(c.trigger,null,query);
+  return c;
+ }).catch(()=>null):Promise.resolve(null);
+ try{const r=await api('/projects/'+id+'/search',{query,limit:24,...(concierge?{conciergeClassified:true}:{})});if(project?.id!==id||run!==searchRun)return;lastSearch={query,r};
   const m=r.metadata||{},plan=r.plan||{},corr=plan.corrections?.map(c=>`${c.term}→${(c.to||[]).slice(0,2).join('/')}`).join(', ')||(m.correction?.to?`${m.correction.from}→${m.correction.to}`:'');
   const hits=plan.termHits?.map(t=>`${t.term} ${t.exact}`).join(' · '),why={'missing-terms':'מילה חסרה באינדקס','no-intersection':'המילים קיימות בנפרד, לא יחד','scoped-only':'כלל מקושר צמצם למוצרים ספציפיים',filtered:'סונן לפי מלאי/תגית/מחיר'}[plan.why?.kind];
   $('search-meta').textContent=[`${r.total??r.matches.length} תוצאות`,{lexical:'התאמה מילולית',spelling:'אחרי תיקון כתיב','router-lexical':'נתב','deep-llm':'הרחבה במודל','closest-alternatives':'חלופות קרובות'}[m.phase]||m.phase,m.llmUsed?'עם LLM':'בלי LLM',corr?'תיקון: '+corr:null,hits?'מילים: '+hits:null,why,r.message].filter(Boolean).join(' · ');
   $('results').replaceChildren(...r.matches.map(p=>el('button',{type:'button',class:'result',onclick:()=>showProduct(p.id)},p.image&&safeUrl(p.image)?el('img',{src:safeUrl(p.image),alt:'',loading:'lazy'}):el('div',{class:'noimg'}),el('b',{},p.title),el('small',{},[p.specifications?.author,p.price!=null?'₪'+p.price:null].filter(Boolean).join(' · ')))));
   if(!r.matches.length)$('results').append(el('p',{class:'meta'},'אין תוצאות.'));
   $('report').hidden=false;
-  showConciergeTrigger(r.concierge,r.oos);
+  const pre=await early;if(project?.id!==id||run!==searchRun)return;
+  if(!pre?.open)showConciergeTrigger(r.concierge,r.oos);
+  const why2=r.conciergeDecision?.explanation||r.conciergeDecision?.error||pre?.decision?.explanation||pre?.decision?.error;if(why2)$('search-meta').textContent+=' · קונסיירז׳: '+why2;
  }catch(err){$('search-meta').textContent=err.message;}
 }
 $('live-search').onsubmit=e=>{e.preventDefault();const q=$('query').value.trim();if(q)runSearch(q);};
+// Autocomplete demo: while the operator types, the module's suggestions (same rules as search, index only, no model)
+// fill the results grid; Enter or "חפש" runs the full search. The checkbox turns it off and is remembered.
+let suggestRun=0,suggestTimer=null;
+const productTile=p=>el('button',{type:'button',class:'result',onclick:()=>showProduct(p.id)},p.image&&safeUrl(p.image)?el('img',{src:safeUrl(p.image),alt:'',loading:'lazy'}):el('div',{class:'noimg'}),el('b',{},p.title),el('small',{},[p.specifications?.author,p.price!=null?'₪'+p.price:null].filter(Boolean).join(' · ')));
+try{$('suggest-on').checked=localStorage.getItem('studio_suggest')!=='off';}catch{}
+$('suggest-on').onchange=()=>{try{localStorage.setItem('studio_suggest',$('suggest-on').checked?'on':'off');}catch{}suggestRun++;clearTimeout(suggestTimer);if($('suggest-on').checked)$('query').dispatchEvent(new Event('input'));};
+$('query').addEventListener('input',()=>{
+ clearTimeout(suggestTimer);if(!project||!$('suggest-on').checked)return;
+ const q=$('query').value.trim(),id=project.id,mine=++suggestRun;if(q.length<2)return;
+ suggestTimer=setTimeout(async()=>{
+  try{const r=await api('/projects/'+id+'/suggest',{query:q});if(project?.id!==id||mine!==suggestRun||$('query').value.trim()!==q)return;
+   $('report').hidden=true;showConciergeTrigger(null);
+   $('search-meta').textContent=[`הצעות בהקלדה · ${r.total} · ${r.elapsedMs}ms · בלי LLM`,r.completed.length?'הושלם ל: '+r.completed.join(', '):null,r.ranking?.length?'כללי דירוג: '+r.ranking.join(', '):null,r.corrections?.length?'תיקון: '+r.corrections.map(c=>`${c.term}→${(c.to||[]).slice(0,2).join('/')}`).join(', '):null,'Enter לחיפוש המלא'].filter(Boolean).join(' · ');
+   $('results').replaceChildren(...r.matches.map(productTile));if(!r.matches.length)$('results').append(el('p',{class:'meta'},'אין הצעות להקלדה הזו.'));
+  }catch(err){if(mine===suggestRun)$('search-meta').textContent=err.message;}
+ },180);
+});
 $('report').onclick=()=>{if(!lastSearch)return;const {query,r}=lastSearch;attached={query,total:r.total,phase:r.metadata?.phase,results:r.matches.slice(0,12).map(p=>({id:p.id,title:p.title}))};renderAttached();$('message').value=`החיפוש ״${query}״ לא מחזיר את מה שצריך. `;$('message').focus();};
 function renderAttached(){const a=$('attached');a.hidden=!attached;a.replaceChildren();if(attached)a.append(attached.product?`מצורף: ״${attached.product.title}״`:`מצורף: תוצאות ״${attached.query}״`,el('button',{type:'button',class:'link',onclick:()=>{attached=null;renderAttached();}},'הסר'));}
 
-const REASONS={no_results:'אין תוצאות',out_of_stock:'המוצר אזל',non_literal:'החיפוש לא נפתר מילולית'};
-let shopperHistory=[],shopperTrigger=null;
-function triggerCard(trigger,oos){return [el('p',{},el('b',{},'הקונסיירז׳ היה נפתח ללקוח'),` · ${REASONS[trigger.reason]||trigger.reason}`),el('p',{class:'meta'},trigger.opener),oos?.length?el('p',{class:'meta'},'אזל: '+oos.map(p=>p.title).join(' · ')):null,el('button',{type:'button',class:'primary',onclick:()=>openShopperPreview(trigger)},'פתח תצוגת לקוח')];}
-function showConciergeTrigger(trigger,oos){
+const REASONS={no_results:'אין תוצאות',out_of_stock:'המוצר אזל',non_literal:'החיפוש לא נפתר מילולית',merchant_policy:'לפי הנחיות החנות',conversational:'זוהה לפני החיפוש כבקשת ייעוץ'};
+let shopperHistory=[],shopperTrigger=null,shopperConversation=null;
+function triggerCard(trigger,oos,first){return [el('p',{},el('b',{},'הקונסיירז׳ היה נפתח ללקוח'),` · ${REASONS[trigger.reason]||trigger.reason}`),el('p',{class:'meta'},trigger.opener),oos?.length?el('p',{class:'meta'},'אזל: '+oos.map(p=>p.title).join(' · ')):null,el('button',{type:'button',class:'primary',onclick:()=>openShopperPreview(trigger,first)},'פתח תצוגת לקוח')];}
+function showConciergeTrigger(trigger,oos,first){
  shopperTrigger=trigger||null;
- for(const id of ['search-concierge','concierge-trigger']){const box=$(id);if(!box)continue;box.hidden=!trigger;box.replaceChildren(...(trigger?triggerCard(trigger,oos):[]));}
+ for(const id of ['search-concierge','concierge-trigger']){const box=$(id);if(!box)continue;box.hidden=!trigger;box.replaceChildren(...(trigger?triggerCard(trigger,oos,first):[]));}
 }
 function renderConcierge(){
  const root=$('concierge-settings');if(!root||!project)return;
  const c=project.concierge||{},on=c.enabled===true;
  root.replaceChildren(
   el('h3',{},'יועץ ללקוח בחנות'),
-  el('p',{class:'meta'},'נפתח אחרי חיפוש שנכשל — אותם רגעים כמו ב־dashboard: אין תוצאות, אזל מהמלאי, או שהגריד הוא ניחוש לא מילולי. מדבר רק עם הקטלוג והכללים של הלקוח הזה.'),
+  el('p',{class:'meta'},'הגדירו מתי להציע עזרה ללקוח ובאיזה מודל להשתמש. ההגדרות חלות על תצוגת הסטודיו; האתר החי דורש חיבור נפרד.'),
   el('p',{},el('b',{},on?'פעיל':'כבוי'),on?(c.autoOpen===false?' · כפתור הזמנה':' · נפתח לבד'):''),
   c.context?el('p',{class:'description'},c.context):el('p',{class:'meta'},'אין עדיין הנחיות קול. בקש מהאייג׳נט להפעיל ולכתוב את הקשר החנות.'),
   el('button',{type:'button',class:'ghost',onclick:()=>{$('message').value=on?'כבה את הקונסיירז׳':'הפעל קונסיירז׳ לחנות הזו. כתוב הקשר קצר בסגנון המוכר, לפי הקטלוג, ובדוק מתי הוא נפתח.';$('message').focus();}},on?'בקש מהאייג׳נט לשנות':'בקש מהאייג׳נט להפעיל')
  );
- $('concierge-chat').hidden=!on;
+ const policy=el('textarea',{id:'concierge-opening-policy',rows:3,maxlength:4000,placeholder:'למשל: פתח כשאין תוצאות או כשמבקשים המלצה. אל תפתח בחיפוש של מוצר מדויק.'},c.triggerPrompt||'');
+ const modelSelect=el('select',{id:'concierge-model'},el('option',{value:'',selected:!c.model},'ברירת מחדל — '+(project.chatModel||'מודל השרת')),(project.conciergeModels||[]).map(m=>el('option',{value:m,selected:c.model===m},m)));
+ const enabled=el('input',{id:'concierge-enabled',type:'checkbox',checked:on});
+ const auto=el('input',{id:'concierge-auto-open',type:'checkbox',checked:c.autoOpen!==false});
+ const save=el('button',{type:'submit',class:'primary'},'שמור הגדרות');
+ const form=el('form',{class:'concierge-config',onsubmit:async e=>{
+  e.preventDefault();if(busy)return toast('המתינו לסיום עבודת האייג׳נט');save.disabled=true;const id=project.id;
+  try{const next=await api('/projects/'+id+'/concierge/settings',{enabled:enabled.checked,autoOpen:auto.checked,triggerPrompt:policy.value,model:modelSelect.value||null});if(project?.id===id){project=next;renderConcierge();}toast('הגדרות הקונסיירז׳ נשמרו בסטודיו');}catch(err){toast(err.message);}finally{save.disabled=false;}
+ }},el('label',{for:'concierge-opening-policy'},'מתי לפתוח את הקונסיירז׳'),policy,el('label',{for:'concierge-model'},'מודל הקונסיירז׳'),modelSelect,el('label',{},enabled,' פעיל'),el('label',{},auto,' פתיחה אוטומטית (אחרת: כפתור הזמנה)'),el('div',{class:'concierge-config-actions'},save,el('button',{type:'button',class:'ghost',onclick:()=>{
+  $('message').value=`דייק את מדיניות פתיחת הקונסיירז׳ לפי ההנחיות האלה: ${policy.value||'הצע מדיניות שמתאימה לחנות'}\nמודל הקונסיירז׳: ${modelSelect.value||'המלץ על מודל נתמך שמתאים למהירות ולעלות'}. השתמש ב-configure_concierge ובדוק חיפוש שבו הוא צריך להיפתח וחיפוש שבו הוא צריך להישאר סגור. שמור את יתר ההגדרות.`;$('message').focus();
+ }},'העבר לאייג׳נט לדיוק ובדיקה')));
+ root.append(form,el('p',{class:'meta'},'כל חיפוש מסווג במהירות לפני שהתוצאות חוזרות: בקשת ייעוץ פותחת את היועץ מיד, עם שלבי החשיבה והמוצרים בזמן אמת. מדיניות מותאמת מחליפה את כללי הסיווג, ונבדקת שוב אחרי החיפוש רק כשאין תוצאות, המוצר אזל או שההתאמה לא מילולית; שדה ריק מחזיר את הכללים הרגילים. המודל הנבחר משמש גם לשיחה וגם לסיווג.'));
+ $('concierge-chat').hidden=!on;renderSavedConversations();
 }
-function openShopperPreview(trigger){
- tab('concierge');shopperHistory=[];shopperTrigger=trigger;
+// first: the shopper's own query, sent as the opening message so the advisor starts working without another prompt.
+function openShopperPreview(trigger,first){
+ tab('concierge');shopperHistory=[];shopperTrigger=trigger;shopperConversation=crypto.randomUUID();
  const thread=$('concierge-thread');thread.replaceChildren(el('div',{class:'msg assistant'},el('div',{class:'body'},el('p',{},trigger.opener))));
- $('concierge-message').value='';$('concierge-message').focus();
+ $('concierge-message').value='';if(first)shopperTurn(first);else $('concierge-message').focus();
 }
-$('concierge-chat').onsubmit=async e=>{
+let shopperRun=0;
+async function shopperTurn(message){
+ const thread=$('concierge-thread'),id=project.id,run=++shopperRun,live=()=>project?.id===id&&run===shopperRun;
+ shopperConversation||=crypto.randomUUID();
+ thread.append(el('div',{class:'msg user'},el('div',{class:'bubble'},message)));
+ const steps=el('ul',{class:'steps'}),status=el('p',{class:'working'},'חושב…'),found=el('div',{class:'chips'}),body=el('div',{class:'body'},steps,status,found),seen=new Set();
+ thread.append(el('div',{class:'msg assistant'},body));thread.scrollTop=thread.scrollHeight;
+ try{
+  await connection.stream('/projects/'+id+'/concierge/stream',{message,trigger:shopperTrigger,history:shopperHistory,conversationId:shopperConversation},e=>{
+   if(!live())return;
+   if(e.type==='thinking')status.textContent=e.text;
+   else if(e.type==='step')steps.append(el('li',{class:'meta'},e.text));
+   else if(e.type==='products'){for(const p of e.products)if(!seen.has(p.id)&&seen.size<12){seen.add(p.id);found.append(productChip(p));}}
+   else if(e.type==='done'){
+    shopperHistory.push({role:'user',text:message},{role:'assistant',text:e.reply});
+    status.remove();found.replaceChildren(...(e.products||[]).map(productChip));body.insertBefore(markdown(e.reply),found);
+   }
+   else if(e.type==='error'){status.remove();found.remove();body.append(el('p',{class:'error'},e.message));}
+   thread.scrollTop=thread.scrollHeight;
+  });
+ }catch(err){if(live()){status.remove();body.append(el('p',{class:'error'},err.message));}}
+ if(project?.id===id)renderSavedConversations();
+}
+// Every shopper turn is saved on the server; this lists the saved conversations, newest first.
+async function renderSavedConversations(){
+ const root=$('concierge-saved');if(!root||!project)return;const id=project.id;
+ let data;try{data=await connection.request('/projects/'+id+'/concierge/conversations');}catch{return;}
+ if(project?.id!==id)return;root.hidden=!data.total;if(!data.total)return;
+ const when=t=>new Date(t).toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'});
+ root.replaceChildren(el('summary',{},`שיחות שמורות (${data.total})`),...data.conversations.map(c=>el('details',{class:'saved-conversation'},
+  el('summary',{},`${when(c.startedAt)} · ${c.turns.length} הודעות · ${c.turns[0].message.slice(0,60)}`,c.trigger?.reason?el('small',{class:'meta'},' · '+(REASONS[c.trigger.reason]||c.trigger.reason)):null),
+  c.turns.map(t=>[el('div',{class:'msg user'},el('div',{class:'bubble'},t.message)),
+   el('div',{class:'msg assistant'},el('div',{class:'body'},t.error?el('p',{class:'error'},t.error):markdown(t.reply||''),t.products?.length?el('div',{class:'chips'},t.products.map(productChip)):null))]))));
+}
+$('concierge-chat').onsubmit=e=>{
  e.preventDefault();if(!project?.concierge?.enabled)return toast('הקונסיירז׳ כבוי');
  const message=$('concierge-message').value.trim();if(!message)return;$('concierge-message').value='';
- const thread=$('concierge-thread');thread.append(el('div',{class:'msg user'},el('div',{class:'bubble'},message)));
- const wait=el('p',{class:'working'},'היועץ עונה…');thread.append(wait);
- try{
-  const r=await api('/projects/'+project.id+'/concierge',{message,trigger:shopperTrigger,history:shopperHistory});
-  wait.remove();shopperHistory.push({role:'user',text:message},{role:'assistant',text:r.reply});
-  const body=el('div',{class:'body'});body.append(markdown(r.reply));
-  if(r.products?.length)body.append(el('div',{class:'chips'},r.products.map(productChip)));
-  thread.append(el('div',{class:'msg assistant'},body));
- }catch(err){wait.remove();thread.append(el('p',{class:'error'},err.message));}
- thread.scrollTop=thread.scrollHeight;
+ shopperTurn(message);
 };
 async function showProduct(productId){
  tab('product');const root=$('product');root.replaceChildren(el('p',{class:'meta'},'טוען…'));
@@ -409,7 +500,7 @@ async function renderCrawler(){
  const rate=el('input',{type:'number',min:'0.5',max:'60',step:'0.5',value:String(s.rateMs/1000)}),auto=el('input',{type:'checkbox',checked:s.autoMerge}),src=Object.fromEntries(['clicks','sitemap','catalog'].map(k=>[k,el('input',{type:'checkbox',checked:s.sources[k]})]));
  fill(root,
   el('h3',{},'סורק האתר'),
-  el('p',{class:'meta'},`סורק את דפי המוצר הציבוריים של ${project.url||'האתר'}: שם, מחבר, הוצאה, מחיר ומלאי. מזדהה בשמו ומכבד robots.txt. ההתקדמות נשמרת במסד, ${c.workerMode==='studio'?'הסטודיו מריץ את הסריקה בעצמו, במקביל ללקוחות אחרים, וממשיך מאותה נקודה אחרי הפעלה מחדש.':`והעבודה נעשית ב־worker ${c.workerMode==='local'?'שרץ במחשב הזה':'בענן (Render)'} — ממשיך גם כשהסטודיו סגור.`}`),
+  el('p',{class:'meta'},`סורק את דפי המוצר הציבוריים של ${siteUrl(project)||'האתר'}: שם, מחבר, הוצאה, מחיר ומלאי. מזדהה בשמו ומכבד robots.txt. ההתקדמות נשמרת במסד, ${c.workerMode==='studio'?'הסטודיו מריץ את הסריקה בעצמו, במקביל ללקוחות אחרים, וממשיך מאותה נקודה אחרי הפעלה מחדש.':`והעבודה נעשית ב־worker ${c.workerMode==='local'?'שרץ במחשב הזה':'בענן (Render)'} — ממשיך גם כשהסטודיו סגור.`}`),
   el('p',{},el('b',{class:'status-'+c.status},CRAWL_STATUS[c.status]||c.status),c.worker?` · worker: ${c.worker}`:'',c.running&&c.etaMinutes!=null?` · נותרו כ־${c.etaMinutes>90?Math.round(c.etaMinutes/60)+' שעות':c.etaMinutes+' דקות'}`:'',c.pagesPerMinute?` · ${c.pagesPerMinute} דפים לדקה`:''),
   c.blockedReason?el('p',{class:'error'},'סיבה: '+c.blockedReason):null,
   c.status==='waiting'?el('p',{class:'meta'},c.workerMode==='studio'?'הסטודיו מתחיל את הסריקה בעצמו תוך רגע (אם סורק קודם עוד מחזיק בה, עד 3 דקות).':c.workerMode==='local'?'ה־worker המקומי אמור להתחיל תוך כמה שניות.':'אף worker לא לקח את העבודה עדיין. ודא שה־Background Worker ב־Render פעיל; אם worker אחר נעצר, הוא ישוחרר תוך 3 דקות.'):null,
@@ -417,9 +508,10 @@ async function renderCrawler(){
   c.total?el('dl',{class:'stats'},el('dt',{},'דפים'),el('dd',{},`${num(c.done)} / ${num(c.total)} (${pct}%)`),el('dt',{},'מוצרים שנאספו'),el('dd',{},num(c.products)),el('dt',{},'ממתינים למיזוג'),el('dd',{},num(c.unmerged)),el('dt',{},'שגיאות'),el('dd',{},num(c.errors)),
    el('dt',{},'מקורות בתור'),el('dd',{},c.sources?`${num(c.sources.clicks)} מקליקים · ${num(c.sources.sitemap)} ממפת האתר · ${num(c.sources.catalog)} מהקטלוג`:'—'),el('dt',{},'מיזוג אחרון'),el('dd',{},c.lastMerge?`${new Date(c.lastMerge.mergedAt).toLocaleString('he-IL')} · ${num(c.lastMerge.added)} נוספו`:'עוד לא')):null,
   el('div',{class:'actions'},
-   c.running||c.desired==='running'?el('button',{type:'button',class:'ghost',onclick:()=>act('stop',{})},'עצור'):el('button',{type:'button',class:'primary',onclick:()=>act('start',{})},c.status==='none'?'התחל סריקה':c.status==='done'?'סרוק שוב דפים חדשים':'המשך סריקה'),
+   c.running||c.desired==='running'?el('button',{type:'button',class:'ghost',onclick:()=>act('stop',{})},'עצור'):el('button',{type:'button',class:'primary',onclick:()=>act('start',{})},c.status==='none'?'התחל סריקה':c.status==='done'?'סרוק שוב את כל הדפים':'המשך סריקה'),
    el('button',{type:'button',class:'ghost',disabled:!c.unmerged,onclick:()=>act('merge',{})},`מזג לקטלוג${c.unmerged?` (${num(c.unmerged)})`:''}`),
-   !c.running&&c.desired!=='running'&&c.status!=='none'?el('button',{type:'button',class:'ghost',title:'בונה מחדש את רשימת הדפים (קליקים, מפת אתר, קטלוג) ושומר את מה שכבר נאסף',onclick:()=>act('start',{reseed:true})},'רענן רשימת דפים'):null),
+   !c.running&&c.desired!=='running'&&c.status!=='none'?el('button',{type:'button',class:'ghost',title:'בונה מחדש את רשימת הדפים וסורק רק מוצרים שעדיין לא נאספו',onclick:()=>act('start',{reseed:true})},'רענן רשימת דפים'):null,
+   !c.running&&c.desired!=='running'&&!['none','done'].includes(c.status)?el('button',{type:'button',class:'ghost',onclick:()=>act('start',{rescan:true})},'סרוק מחדש מההתחלה'):null),
   el('fieldset',{},el('legend',{},'הגדרות'),
    el('label',{},'שניות בין דפים',rate),
    el('label',{},auto,'מיזוג אוטומטי לקטלוג כל 10 דקות'),
@@ -448,18 +540,44 @@ function renderVersions(){
    project=await api('/projects/'+project.id);renderVersions();}catch(err){toast(err.message);}finally{b.disabled=false;}}},'ייצא לדאשבורד סרבר המקומי'),
   el('div',{id:'dashboard-connect',class:'production'}),
   el('div',{id:'production-control',class:'production'}),
-  project.dashboardExport?el('p',{class:'meta'},`ייצוא אחרון: גרסה ${project.dashboardExport.revision} · ${new Date(project.dashboardExport.at).toLocaleString('he-IL')}${project.dashboardExport.revision!==project.revisions.length?' · יש גרסה חדשה יותר שלא יוצאה':''}`):null));
+  project.dashboardExport?el('p',{class:'meta'},`ייצוא קוד אחרון: בגרסה ${project.dashboardExport.revision} · ${new Date(project.dashboardExport.at).toLocaleString('he-IL')} · גרסאות חדשות מתפרסמות ל־Mongo אוטומטית (ראו "שליטה בפרודקשן"); ייצוא חוזר נדרש רק כשקוד המנוע משתנה`):null));
  renderDashboardConnect();renderProduction();
- versions.append(pluginWorkspacePanel({id:project.id,api,connection,el,toast}));
- versions.append(pluginBuilder());
  versions.append(el('h3',{},'גרסאות'));
  for(const r of [...project.revisions].reverse().slice(0,30))versions.append(el('div',{class:'version'+(r.number===project.revisions.length?' current':'')},
   el('b',{},'גרסה '+r.number),el('small',{},r.createdAt?new Date(r.createdAt).toLocaleString('he-IL'):''),r.note?el('p',{},r.note):null,
   r.changes?.length?el('ul',{},r.changes.slice(0,6).map(c=>el('li',{},typeof c==='string'?c:String(c)))):null,
   r.number!==project.revisions.length?el('button',{type:'button',class:'link',onclick:()=>rollback(r.number)},'חזור לגרסה הזו'):el('span',{class:'pill'},'נוכחית')));
 }
-function pluginBuilder(){
- return createPluginBuilder({project,el,api,connection,onConnected:async()=>{project=await api('/projects/'+project.id);renderVersions();}});
+let pluginPanelKey=null;
+function renderPlugin(){
+ const root=$('plugin-center');if(!root)return;
+ if(!project){root.replaceChildren(el('p',{class:'meta'},'בחרו חנות כדי לנהל את התוסף שלה.'));pluginPanelKey=null;return;}
+ const key=project.id+':'+(project.pluginWorkspace?.revision||0);
+ if(pluginPanelKey===key)return;pluginPanelKey=key;
+ root.replaceChildren(pluginAgentPanel({project,el,api,connection,toast,
+  beginRun:()=>{if(busy)throw Error('המתינו לסיום עבודת האייג׳נט');busy=true;startRun();setAuditButtons();return running;},
+  endRun:()=>{endRun();busy=false;setAuditButtons();},
+  onProject:async next=>{if(project?.id!==next.id)return;project=next;pluginPanelKey=next.id+':'+(next.pluginWorkspace?.revision||0);renderVersions();renderConcierge();renderThread();$('client-version').textContent='גרסה '+next.revisions.length;await loadClients();}
+ }));
+ // Shipping to the store: the client's Shopify app / WooCommerce plugin, daily feed, rollout and measurement.
+ const delivery=el('div',{id:'plugin-delivery'});root.append(delivery);
+ renderDelivery({root:delivery,project,api,download:(path,body)=>connection.request(path,body,true),streamInto,el,toast});
+ const labels=el('div',{id:'label-scan',class:'card'});root.append(labels);renderLabels(labels);
+}
+// Store labels read from the storefront's listing pages: they reach the plugin through /search `badges`, so a label the
+// merchant changes on the site shows on the result cards after the next scan (auto every N hours, or "scan now").
+async function renderLabels(root){
+ const id=project?.id;if(!id)return;let s;try{s=await api('/projects/'+id+'/labels');}catch(err){root.replaceChildren(el('p',{class:'error'},err.message));return;}if(project?.id!==id)return;
+ const sc=s.scan,status=el('p',{class:'meta'},sc?`סריקה אחרונה ${new Date(sc.scannedAt).toLocaleString('he-IL')} · ${sc.pages} עמודים · ${sc.labelled} מוצרים עם תווית${sc.complete?'':' · חלקית'} · שינויים: +${sc.changes.added} −${sc.changes.removed} ~${sc.changes.changed}`:'עדיין לא נסרקו תוויות.');
+ const scan=async e=>{const b=e.target;b.disabled=true;const progress=el('span',{class:'meta'},' מתחיל…');b.after(progress);
+  try{let done=null;await connection.stream('/projects/'+id+'/labels/scan',{},ev=>{if(ev.type==='progress')progress.textContent=` עמוד ${ev.pages} · ${ev.products} מוצרים`;else if(ev.type==='error')toast(ev.message);else if(ev.type==='done')done=ev.scan;});
+   if(done)toast(`נסרקו ${done.pages} עמודים · ${done.labelled} מוצרים עם תווית · המודול מתפרסם לשרת`);}catch(err){toast(err.message);}renderLabels(root);};
+ const every=el('input',{type:'number',min:1,max:168,value:s.auto?.everyHours||6,style:'width:4em','aria-label':'כל כמה שעות'});
+ const auto=el('input',{type:'checkbox',checked:!!s.auto,onchange:async()=>{try{await api('/projects/'+id+'/labels/settings',{auto:auto.checked,everyHours:Number(every.value)});toast(auto.checked?`סריקה אוטומטית כל ${every.value} שעות (כל עוד הסטודיו רץ)`:'סריקה אוטומטית כובתה');}catch(err){toast(err.message);auto.checked=!auto.checked;}}});
+ const counts=Object.entries(sc?.counts||{}).slice(0,12).map(([t,n])=>el('li',{},`${t} — ${n} מוצרים`));
+ root.replaceChildren(el('b',{},'תוויות מבצע מהאתר'),el('p',{class:'meta'},`התוויות שהחנות מציגה על כרטיסי המוצר (${s.config.labelSelector} בעמודי ${s.config.listingPath}) נשמרות על כרטיסי המוצר, מתפרסמות עם המודול ומגיעות לתוסף בתוצאות החיפוש. התוסף מצייר אותן בעיצוב של האתר — רק הטקסט מגיע מהשרת.`),status,
+  el('div',{class:'row'},el('button',{type:'button',class:sc?'ghost':'primary',disabled:s.running,onclick:scan},s.running?'סריקה רצה…':'סרוק עכשיו'),el('label',{},auto,' סריקה אוטומטית כל ',every,' שעות')),
+  counts.length?el('ul',{class:'meta'},...counts):null);
 }
 // Production switch (users.users → semantix: on/off, share of shoppers) and the module data published to the store's Mongo.
 // A store onboarded from its URL has no dashboard client yet: create one (user + products) in the existing schema.

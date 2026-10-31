@@ -31,31 +31,45 @@ test('a tenant mini server plugs into a dashboard-server-shaped app behind its f
   // DASHBOARD_NODE_MODULES=<dashboard-server>/node_modules checks the module against the real server's dependencies.
   await symlink(process.env.DASHBOARD_NODE_MODULES||join(root,'node_modules'),join(dir,'node_modules'));
   // Live Mongo differs from the snapshot: s1 is cheaper, v1 went out of stock, n1 is new.
-  const live=[...rows.map(r=>r.id==='s1'?{...r,price:9}:r.id==='v1'?{...r,stockStatus:'outofstock'}:r),{id:'n1',name:'עגבניה חדשה',categories:['ירקות'],stockStatus:'instock',price:7}];
+  // Live Mongo also carries the feed's label fields, and v2 was taken out of the catalog (visibility "hidden").
+  const live=[...rows.map(r=>r.id==='s1'?{...r,price:9}:r.id==='v1'?{...r,stockStatus:'outofstock'}:r.id==='v2'?{...r,catalog_visibility:'hidden'}:r.id==='v3'?{...r,offerId:333,salePrice:6,specialLabel:{printed:{enabled:true,value:8},digital:{enabled:true,value:3}}}:r),{id:'n1',name:'עגבניה חדשה',categories:['ירקות'],stockStatus:'instock',price:7}];
   const {createSemantixTenants}=await import(pathToFileURL(join(dir,'tenants/semantix-registry.mjs')).href);
   let userSwitch=null;const db=fakeDb(live),tenants=createSemantixTenants({getDb:async name=>(assert.equal(name,'carmella-db'),db)});
   const app=express();app.use(express.json());app.use((req,_res,next)=>{req.store={dbName:req.get('X-Store'),semantix:userSwitch};next();});
   app.post('/search',tenants.search,(_req,res)=>res.json({legacy:true}));app.get('/search/load-more',tenants.loadMore,(_req,res)=>res.json({legacy:true}));
+  app.get('/autocomplete',tenants.autocomplete,(_req,res)=>res.json([{legacy:true}]));
   const server=app.listen(0);await new Promise(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
   const post=(body,store='carmella-db')=>fetch(base+'/search',{method:'POST',headers:{'Content-Type':'application/json','X-Store':store},body:JSON.stringify(body)}).then(r=>r.json());
   try{
    assert.deepEqual(await post({query:'עגבניות',modern:true}),{legacy:true},'off by default: the existing pipeline answers');
+   const suggest=(q,store='carmella-db')=>fetch(base+'/autocomplete?query='+encodeURIComponent(q),{headers:{'X-Store':store}}).then(r=>r.json());
+   assert.deepEqual(await suggest('עגב'),[{legacy:true}],'off by default: the existing autocomplete answers');
    process.env.SEMANTIX_TENANTS=manifest.slug;assert.deepEqual(await post({query:'עגבניות',modern:true}),{legacy:true},'env does not switch a module on');delete process.env.SEMANTIX_TENANTS;
    userSwitch={module:manifest.slug,enabled:true};
    assert.deepEqual(await post({query:'עגבניות',modern:true},'someone-else'),{legacy:true},'other stores are untouched');
    const r=await post({query:'עגבניות',limit:10,modern:true});
    assert.equal(r.metadata.searchEngine,'semantix-'+manifest.slug);assert.deepEqual(r.metadata.ranking,['fresh']);
    assert.ok(!r.products.some(x=>x.id.endsWith('v1')),'live stock hides a product that went out of stock');
+   assert.ok(!r.products.some(x=>x.id.endsWith('v2')),'a product whose catalog visibility is hidden is not returned');
    assert.ok(r.products.some(x=>x.title==='עגבניה חדשה')||r.pagination.hasMore,'a new product is searchable');
    assert.equal(r.products.at(-1)?.categories?.[0]==='רטבים'||r.pagination.hasMore,true);
    assert.equal(r.products.find(x=>x.id.endsWith('v3'))?.specifications?.taste,'מתוק','enriched snapshot fields are kept');
    assert.ok(r.pagination.nextToken.startsWith(manifest.tokenPrefix));
    const more=await fetch(base+'/search/load-more?token='+encodeURIComponent(r.pagination.nextToken)+'&limit=10',{headers:{'X-Store':'carmella-db'}}).then(x=>x.json());
    const all=[...r.products,...more.products];assert.equal(all.length,r.total);assert.equal(new Set(all.map(x=>x.id)).size,all.length);
-   assert.equal(all.find(x=>x.id.endsWith('s1')).price,9,'live price');assert.equal(all.at(-1).id.endsWith('s1'),true,'the sauce ranks after fresh tomatoes');
+   assert.equal(all.find(x=>x.id.endsWith('s1')).price,9,'live price');assert.equal(all.find(x=>x.id.endsWith('v3')).specialLabel.printed.value,8,'label fields ride along in search results');assert.equal(all.at(-1).id.endsWith('s1'),true,'the sauce ranks after fresh tomatoes');
    const paged=await post({query:'עגבניות',modern:true});assert.equal(paged.products.length,4,'no limit from the storefront: the tenant page size');
    const next=await fetch(base+'/search/load-more?token='+encodeURIComponent(paged.pagination.nextToken),{headers:{'X-Store':'carmella-db'}}).then(x=>x.json());assert.equal(next.products.length,4,'load-more pages use it too');
    const bad=await fetch(base+'/search/load-more?token='+manifest.tokenPrefix+'nope',{headers:{'X-Store':'carmella-db'}});assert.equal(bad.status,410);
+   // Suggestions follow the module: an unfinished word is completed from the catalog, live stock and rules apply,
+   // rows keep the storefront's shape, and what the module cannot answer goes to the existing autocomplete.
+   const typed=await suggest('עגב');assert.ok(typed.length>=4&&typed.every(x=>x.source==='products'&&x.suggestion&&x.id&&x.suggestion.includes('עגבני')));
+   assert.ok(!typed.some(x=>x.id.endsWith('v1')),'a product that went out of stock is not suggested');assert.ok(!typed.some(x=>x.id.endsWith('v2')));
+   const labelled=(await suggest('עגבניה 3')).find(x=>x.id.endsWith('v3'));assert.equal(labelled.offerId,333);assert.equal(labelled.salePrice,6);assert.equal(labelled.specialLabel.digital.value,3,'label fields ride along in suggestions');assert.equal(typed[0].description,undefined);
+   assert.ok((await suggest('עגבניה חד')).some(x=>x.suggestion==='עגבניה חדשה'),'the last word may be unfinished');
+   const wide=await fetch(base+'/autocomplete?limit=24&query='+encodeURIComponent('עגבניות'),{headers:{'X-Store':'carmella-db'}}).then(r=>r.json());
+   assert.equal(wide.at(-1).id.endsWith('s1'),true,'ranking rules order suggestions too: the sauce comes after fresh tomatoes');
+   assert.deepEqual(await suggest('zzzqqq'),[{legacy:true}]);assert.deepEqual(await suggest('עגב','someone-else'),[{legacy:true}]);
   }finally{server.close();}
  }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -66,7 +80,7 @@ test('export writes the module into a local dashboard-server, verifies it loads,
  const root=fileURLToPath(new URL('.',import.meta.url)),dir=await mkdtemp(join(tmpdir(),'dash-local-')),backups=join(dir,'..',`${dir.split('/').pop()}-backups`);
  try{
   await mkdir(join(dir,'tenants/garmin'),{recursive:true});await writeFile(join(dir,'server.js'),'// server');await symlink(process.env.DASHBOARD_NODE_MODULES||join(root,'node_modules'),join(dir,'node_modules'));
-  assert.deepEqual(await dashboardStatus(dir),{dir,found:true,wired:false,userField:false});
+  assert.deepEqual(await dashboardStatus(dir),{dir,found:true,wired:false,autocompleteWired:false,userField:false});
   const p=existingProject('carmella',{dbName:'carmella-db'},[{id:'1',name:'עגבניה',categories:['ירקות'],stockStatus:'instock'}]);
   const first=await exportToDashboard(p,{dir,backups,publish});assert.equal(first.verified.ok,true,first.verified.error);assert.equal(first.backup,null);assert.match(first.enable,/semantix:\{module:"carmella",enabled:true\}/);
   assert.deepEqual(published,['carmella'],'the data is published to the store database');assert.equal(existsSync(join(dir,'tenants/carmella/snapshot.json')),false,'no catalog data on disk or in git');
@@ -159,7 +173,14 @@ test('approved revisions are published to the store database and the running mod
   // As the export writes it: code only, no profile.json / snapshot.json.
   const {manifest,files}=buildMiniServer(p);for(const [name,content] of Object.entries(files)){if(/\/(snapshot|profile)\.json$/.test(name))continue;await mkdir(dirname(join(dir,name)),{recursive:true});await writeFile(join(dir,name),content);}
   await symlink(process.env.DASHBOARD_NODE_MODULES||join(root,'node_modules'),join(dir,'node_modules'));
-  const {createTenantSearch}=await import(pathToFileURL(join(dir,'tenants',manifest.slug,'search.mjs')).href);
+  const {createTenantSearch,mergeLive}=await import(pathToFileURL(join(dir,'tenants',manifest.slug,'search.mjs')).href);
+  // Live rows: an out-of-stock product without a price, or one the latest catalog sync missed, is served hidden.
+  const sync=[{...rows[0],stockStatus:'outofstock',lastSeenAt:'2026-10-14T08:00:00Z'},{...rows[1],stockStatus:'outofstock',lastSeenAt:'2026-10-07T08:00:00Z'}];
+  assert.deepEqual(mergeLive(p.productCards,sync,p.revisions[0].profile,p.id).map(c=>c.hidden),[false,true]);
+  // WooCommerce's popular flag and sales follow the live rows: no new edition needed.
+  const popular=mergeLive(p.productCards,[{...rows[0],isWooPopular:false},{...rows[1],isWooPopular:true,total_sales:40}],p.revisions[0].profile,p.id);
+  assert.deepEqual(popular.map(c=>c.tags.includes('isWooPopular')),[false,true]);assert.equal(popular[1].popularity,40);
+  assert.equal(mergeLive(popular,[{...rows[0],isWooPopular:false},{...rows[1],isWooPopular:false}],p.revisions[0].profile,p.id)[1].tags.includes('isWooPopular'),false);
   let clock=0;const search=createTenantSearch({loadRows:async()=>rows,now:()=>clock}),products={};
   const ask=q=>search({collection:products,moduleStore:col,request:{query:q,limit:10}});
   await assert.rejects(ask('עגבניה'),/No published module data/,'nothing published: the registry falls back to the existing search');
@@ -172,12 +193,65 @@ test('approved revisions are published to the store database and the running mod
   const before=editionKey(p);p.revisions.push({number:2,profile:{...p.revisions[0].profile,rankingRules:[validateRankingRule({label:'sauces',field:'categories',values:['רטבים']})]}});assert.notEqual(editionKey(p),before);
   const second=await publishModule(p,manifest.slug,{client});assert.equal(second.previous,first.digest);
   assert.equal((await ask('עגבניה')).metadata.revision,1,'the head is checked at most every 30 s');
-  clock+=30000;const r2=await ask('עגבניה');assert.equal(r2.metadata.revision,2,'picked up without a deploy');assert.deepEqual(r2.metadata.ranking,['sauces']);assert.match(String(r2.matches[0].id),/2$/);
+  // The new edition is built in the background: the request that finds it is still answered by revision 1, without waiting.
+  clock+=30000;assert.equal((await ask('עגבניה')).metadata.revision,1,'no shopper waits for the rebuild');await new Promise(r=>setTimeout(r,50));
+  const r2=await ask('עגבניה');assert.equal(r2.metadata.revision,2,'picked up without a deploy');assert.deepEqual(r2.metadata.ranking,['sauces']);assert.match(String(r2.matches[0].id),/2$/);
   const reads=col.reads;await ask('עגבניה');await ask('רוטב');assert.equal(col.reads,reads,'searches between checks do not touch the module collection');
   assert.deepEqual([...col.docs.values()].filter(d=>d.kind==='part').map(d=>d.digest).sort(),[first.digest,second.digest].sort(),'the previous edition is kept for readers mid-switch');
   p.revisions.push({number:3,profile:p.revisions[0].profile});await publishModule(p,manifest.slug,{client});
   assert.equal([...col.docs.values()].some(d=>d.digest===first.digest),false,'older editions are cleaned up');
   col.fail=true;clock+=30000;assert.equal((await ask('עגבניה')).metadata.revision,2,'a failed check keeps serving the edition in memory');
   col.fail=false;assert.equal((await readPublished(p,manifest.slug,{client})).revision,3);
+  // Catalog rows: only the first load makes a search wait; expired rows answer at once and are refreshed in the background.
+  const {createRowLoader}=await import(pathToFileURL(join(dir,'tenants',manifest.slug,'search.mjs')).href);
+  let loads=0,t=0,gate=null;const cursor={toArray:async()=>{loads++;if(loads>1)await new Promise(r=>{gate=r;});return [{id:loads}];},close:async()=>{}};cursor.limit=cursor.batchSize=cursor.sort=cursor.project=()=>cursor;const coll={find:()=>cursor};
+  const loadRows=createRowLoader({ttlMs:1000,now:()=>t});
+  assert.deepEqual(await loadRows(coll),[{id:1}]);t=2000;
+  assert.deepEqual(await loadRows(coll),[{id:1}],'expired rows answer at once');assert.equal(loads,2,'and are refreshed in the background');
+  gate();await new Promise(r=>setTimeout(r,0));assert.deepEqual(await loadRows(coll),[{id:2}]);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('between builds the module holds slim rows and no parsed edition cards, and hashes the catalog once per load',async()=>{
+ const {publishModule}=await import('./core/module-publish.mjs');
+ const root=fileURLToPath(new URL('.',import.meta.url)),dir=await mkdtemp(join(tmpdir(),'dash-slim-'));
+ const rows=[{id:'1',name:'עגבניה',description:'עגבניה אדומה מהשדה',specifications:{origin:'ישראל'},categories:['ירקות'],stockStatus:'instock',price:5,ItemID:11},
+  {id:'2',name:'רוטב עגבניות',description:'רוטב ביתי',categories:['רטבים'],stockStatus:'instock',price:9},
+  {id:'3',name:'מלפפון',description:'מלפפון פריך',categories:['ירקות'],stockStatus:'instock',price:4}];
+ const p=existingProject('slim',{dbName:'slim-db'},rows);
+ p.revisions[0].profile={...p.revisions[0].profile,pipeline:{...p.revisions[0].profile.pipeline,expansion:'off'}};
+ const col=fakeModuleCollection(),client={db:()=>({collection:()=>col})};
+ try{
+  const {manifest,files}=buildMiniServer(p);for(const [name,content] of Object.entries(files)){if(/\/(snapshot|profile)\.json$/.test(name))continue;await mkdir(dirname(join(dir,name)),{recursive:true});await writeFile(join(dir,name),content);}
+  await symlink(process.env.DASHBOARD_NODE_MODULES||join(root,'node_modules'),join(dir,'node_modules'));
+  const {createTenantSearch,createRowLoader}=await import(pathToFileURL(join(dir,'tenants',manifest.slug,'search.mjs')).href);
+  // A new product the published edition has no card for yet: it must keep its text to be processed at build time.
+  const live=[...rows,{id:'4',name:'חציל',description:'חציל לקלייה',categories:['ירקות'],stockStatus:'instock',price:6}];
+  let finds=0;const products={find:()=>{finds++;const cursor={toArray:async()=>live.map(r=>({...r})),close:async()=>{}};cursor.limit=cursor.batchSize=()=>cursor;return cursor;}};
+  let editionReads=0;const find=col.find.bind(col);col.find=f=>(editionReads++,find(f));
+  await publishModule(p,manifest.slug,{client});
+  let clock=0;const loadRows=createRowLoader({now:()=>clock}),search=createTenantSearch({loadRows,now:()=>clock});
+  const ask=q=>search({collection:products,moduleStore:col,request:{query:q,limit:10}});
+  const hit=(await ask('עגבניה')).matches.find(m=>String(m.id).endsWith('1'));assert.equal(hit.ItemID,11);assert.equal(hit.price,5);
+  assert.equal((await ask('חציל')).matches.length,1,'a product added since the edition is searchable');
+  const cached=await loadRows(products),byId=Object.fromEntries(cached.map(r=>[r.id,r]));
+  assert.deepEqual(byId['1'],{id:'1',stockStatus:'instock',price:5,ItemID:11},'covered rows keep only live, hidden and source fields');
+  assert.equal(byId['4'].description,'חציל לקלייה','a row the edition lacks keeps its text');
+  // The next edition drops product 3: its slimmed row is read again in full before the build, so it stays searchable.
+  p.productCards=p.productCards.filter(c=>!String(c.id).endsWith('3'));p.revisions.push({number:2,profile:p.revisions[0].profile});
+  await publishModule(p,manifest.slug,{client});clock+=30000;
+  assert.equal(finds,1);await ask('מלפפון');await new Promise(r=>setTimeout(r,50));
+  assert.equal(finds,2,'the build reloaded the catalog');
+  const r=await ask('מלפפון');assert.equal(r.metadata.revision,2);assert.equal(r.matches.length,1);assert.equal(r.matches[0].name??r.matches[0].title,'מלפפון');
+  // Twice a day the live rows are folded in: the edition's cards were let go after its build, so they are downloaded again.
+  assert.equal(editionReads,2,'each edition was downloaded once');live[1]={...live[1],price:7};clock+=43200000;
+  await ask('רוטב');await new Promise(r=>setTimeout(r,20));await ask('רוטב');await new Promise(r=>setTimeout(r,50));
+  assert.equal(editionReads,3,'the live rebuild read the edition again');
+  assert.equal((await ask('רוטב')).matches.find(m=>String(m.id).endsWith('2')).price,7,'and serves the new price');
+  // A caller's own rows are never changed, and the fingerprint reads them once per array, not on every search.
+  let reads=0;const mine=live.map(row=>{const copy={...row};delete copy.price;Object.defineProperty(copy,'price',{enumerable:true,get(){reads++;return row.price;}});return copy;});
+  const plain=createTenantSearch({loadRows:async()=>mine,now:()=>clock}),askPlain=q=>plain({collection:products,moduleStore:col,request:{query:q,limit:10}});
+  await askPlain('עגבניה');const after=reads;for(let i=0;i<5;i++)await askPlain('רוטב');
+  assert.equal(reads,after,'repeat searches do not hash the rows again');assert.equal(mine[0].description,'עגבניה אדומה מהשדה');
  }finally{await rm(dir,{recursive:true,force:true});}
 });

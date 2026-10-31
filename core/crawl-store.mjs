@@ -3,29 +3,31 @@ import {MongoClient} from 'mongodb';
 // Crawl state shared by the studio (anywhere) and the crawl worker (locally or on Render).
 // One control/progress document per tenant in `crawls`, one document per crawled page in `crawl_products`.
 // Field ownership avoids lost updates: the studio writes control fields, the worker writes progress fields and the lease.
-const PROGRESS=['projectId','origin','status','robots','sources','next','failures','blockedReason','startedAt','runStartedAt','runStartNext'];
-const CONTROL=['desired','settings','target','reseedRequested'];
+const PROGRESS=['projectId','origin','status','robots','sources','next','failures','paceMs','blockedReason','startedAt','runStartedAt','runStartNext'];
+const CONTROL=['desired','settings','target','reseedRequested','rescanRequested'];
 export const LEASE_MS=3*60*1000;
+const storedPage=p=>({...p,description:String(p.description||'').slice(0,1500)});
 
 // Works with any collection pair that speaks the MongoDB driver API (real client or the in-memory test double).
 export function crawlStoreOver({crawls,products},{now=()=>new Date()}={}){
- const saved=new Map();// projectId → Set of skus already written, so each save only sends new pages
- const known=id=>{if(!saved.has(id))saved.set(id,new Set());return saved.get(id);};
+ const saved=new Map();// projectId → sku → saved content; refreshed pages must be written too
+ const known=id=>{if(!saved.has(id))saved.set(id,new Map());return saved.get(id);};
  return {
   async meta(id){const doc=await crawls.findOne({_id:id},{projection:{queue:0}});if(!doc)return null;return {...doc,productCount:await products.countDocuments({projectId:id})};},
   // Full state for the worker and for merging.
   async read(id){
    const doc=await crawls.findOne({_id:id});if(!doc)return null;const map={},keys=known(id);
-   for(const p of await products.find({projectId:id},{projection:{_id:0,projectId:0}}).toArray()){map[p.sku]=p;keys.add(p.sku);}
-   return {...doc,projectId:id,queue:doc.queue||[],next:doc.next||0,errors:Object.fromEntries((doc.errors||[]).map(e=>[e.url,e.error])),products:map};
+   for(const p of await products.find({projectId:id},{projection:{_id:0,projectId:0}}).toArray()){map[p.sku]=p;keys.set(p.sku,JSON.stringify(p));}
+   return {...doc,projectId:id,productRevision:doc.productRevision??Object.keys(map).length,queue:doc.queue||[],next:doc.next||0,errors:Object.fromEntries((doc.errors||[]).map(e=>[e.url,e.error])),products:map};
   },
   async save(state,{queue=false}={}){
-   const id=state.projectId,keys=known(id),fresh=Object.values(state.products||{}).filter(p=>!keys.has(p.sku));
-   if(fresh.length)await products.bulkWrite(fresh.map(p=>({replaceOne:{filter:{_id:`${id}:${p.sku}`},replacement:{...p,description:String(p.description||'').slice(0,1500),projectId:id,_id:`${id}:${p.sku}`},upsert:true}})),{ordered:false});
-   fresh.forEach(p=>keys.add(p.sku));
+   const id=state.projectId,keys=known(id),signatures=new Map(),fresh=Object.values(state.products||{}).filter(p=>{const signature=JSON.stringify(storedPage(p));signatures.set(p.sku,signature);return keys.get(p.sku)!==signature;});
+   if(fresh.length)await products.bulkWrite(fresh.map(p=>({replaceOne:{filter:{_id:`${id}:${p.sku}`},replacement:{...storedPage(p),projectId:id,_id:`${id}:${p.sku}`},upsert:true}})),{ordered:false});
    const set={updatedAt:now().toISOString(),total:(state.queue||[]).length,errors:Object.entries(state.errors||{}).slice(-2000).map(([url,error])=>({url,error}))};for(const k of PROGRESS)if(state[k]!==undefined)set[k]=state[k];if(queue)set.queue=state.queue;
+   set.productRevision=(state.productRevision??keys.size)+fresh.length;
    await crawls.updateOne({_id:id},{$set:set,...(state.blockedReason===undefined&&{$unset:{blockedReason:''}})},{upsert:true});
-   state.updatedAt=set.updatedAt;return state;
+   fresh.forEach(p=>keys.set(p.sku,signatures.get(p.sku)));
+   state.productRevision=set.productRevision;state.updatedAt=set.updatedAt;return state;
   },
   async control(id,fields){const set={};for(const k of CONTROL)if(fields[k]!==undefined)set[k]=fields[k];await crawls.updateOne({_id:id},{$set:{...set,controlUpdatedAt:now().toISOString()},$setOnInsert:{projectId:id,next:0,queue:[],status:'none'}},{upsert:true});},
   // Takes one tenant that should be running and has no live lease (or already belongs to this worker).

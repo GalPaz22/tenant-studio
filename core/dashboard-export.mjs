@@ -19,7 +19,7 @@ export function dashboardDir(){const dir=resolve(process.env.STUDIO_DASHBOARD_DI
 export async function dashboardStatus(dir=dashboardDir()){
  if(!existsSync(join(dir,'server.js'))||!existsSync(join(dir,'tenants')))return {dir,found:false};
  const server=await readFile(join(dir,'server.js'),'utf8');
- return {dir,found:true,wired:server.includes("semantix-registry.mjs")&&server.includes('semantixTenants.search')&&server.includes('semantixTenants.loadMore'),userField:/semantix:\s*userDoc\.semantix/.test(server)};
+ return {dir,found:true,wired:server.includes("semantix-registry.mjs")&&server.includes('semantixTenants.search')&&server.includes('semantixTenants.loadMore'),autocompleteWired:server.includes('semantixTenants.autocomplete'),userField:/semantix:\s*userDoc\.semantix/.test(server)};
 }
 const run=(cmd,args,opts)=>new Promise(res=>execFile(cmd,args,{timeout:60000,maxBuffer:4e6,...opts},(error,stdout,stderr)=>res({ok:!error,out:String(stdout),err:String(stderr||error?.message||'')})));
 

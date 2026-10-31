@@ -31,8 +31,9 @@
   <div><h1 id="client-name">בחר לקוח</h1><p id="client-meta" class="meta"></p></div>
   <div class="head-actions">
   <button id="demo-site" type="button" class="ghost" title="פותח את האתר של הלקוח כמו שהוא, עם החיפוש שלנו במקום החיפוש שלהם" disabled>הדגמה על האתר</button>
-  <button id="audit-check" type="button" class="ghost" title="בודק את החיפושים המובילים, שהחזירו 0 תוצאות או שלא נלחצו, מול הכללים הנוכחיים" disabled>בדוק חיפושים</button>
+  <button id="audit-check" type="button" class="ghost" title="בודק את החיפושים הפופולריים ביותר, הממירים ביותר והכי פחות ממירים (וגם 0 תוצאות וללא קליקים) מול הכללים הנוכחיים" disabled>בדוק חיפושים</button>
   <button id="audit-fix" type="button" class="primary" title="בודק ומתקן אוטומטית; נשמרים רק תיקונים שעברו אימות" disabled>בדוק ותקן</button>
+  <button id="audit-week" type="button" class="primary" title="סורק את כל השאילתות של 7 הימים האחרונים (נתונים טריים בכל ריצה), מתמקד בחיפושים שלא הובילו לקליק או לרכישה, ומתקן אוטומטית; נשמרים רק תיקונים שעברו אימות" disabled>תקן לפי חיפושי השבוע</button>
   <button id="delete-client" type="button" class="ghost danger" title="מוחק את הלקוח מהסטודיו (לא נוגע במסד של הלקוח)" hidden>מחק לקוח</button>
   <span id="client-version" class="pill" hidden></span>
  </div>
@@ -65,12 +66,14 @@
   <button role="tab" data-tab="processing" aria-selected="false">עיבוד</button>
   <button role="tab" data-tab="product" aria-selected="false">מוצר</button>
   <button role="tab" data-tab="concierge" aria-selected="false">קונסיירז׳</button>
+  <button role="tab" data-tab="plugin" aria-selected="false">תוסף</button>
   <button role="tab" data-tab="versions" aria-selected="false">גרסאות וכללים</button>
   <button role="tab" data-tab="crawler" aria-selected="false">סורק</button>
   <button role="tab" data-tab="takeover" aria-selected="false">החלפת חיפוש</button>
  </div>
  <div class="pane" data-pane="search">
   <form id="live-search" class="live-search"><input id="query" placeholder="נסה חיפוש כמו לקוח בחנות"><button class="primary">חפש</button></form>
+  <label class="suggest-toggle meta"><input id="suggest-on" type="checkbox" checked> הצעות בזמן הקלדה (אוטוקומפליט של המודול)</label>
   <p id="search-meta" class="meta"></p>
   <div id="search-concierge" class="concierge-trigger" hidden></div>
   <button id="report" class="ghost" hidden>התוצאות לא טובות? שלח לאייג׳נט</button>
@@ -82,12 +85,14 @@
   <div id="concierge-trigger" class="concierge-trigger" hidden></div>
   <div id="concierge-thread" class="concierge-thread"></div>
   <form id="concierge-chat" class="live-search" hidden><input id="concierge-message" maxlength="1000" placeholder="כתוב כמו לקוח בחנות"><button>שלח</button></form>
+  <details id="concierge-saved" class="concierge-saved" hidden></details>
  </div>
  <div class="pane" data-pane="baseline" hidden><div id="baseline" class="baseline"></div></div>
  <div class="pane" data-pane="performance" hidden><div id="performance" class="baseline"></div></div>
  <div class="pane" data-pane="processing" hidden><div id="processing" class="baseline"></div></div>
  <div class="pane" data-pane="crawler" hidden><div id="crawler" class="crawler"></div></div>
  <div class="pane" data-pane="takeover" hidden><div id="takeover" class="baseline takeover"></div></div>
+ <div class="pane" data-pane="plugin" hidden><div id="plugin-center"></div></div>
  <div class="pane" data-pane="versions" hidden><div id="rules" class="rules"></div><div id="versions" class="versions"></div></div>
 </section>
 <div id="toast" role="alert" hidden></div>

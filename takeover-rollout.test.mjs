@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import {mkdtemp,readdir,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {rolloutTest,rolloutOf,readRollout,publishRollout,ROLLOUT_TEST} from './core/takeover-control.mjs';
+import {rolloutTest,rolloutOf,readRollout,publishRollout,normalizePins,ROLLOUT_TEST} from './core/takeover-control.mjs';
 import {mergeSiteConfig} from './core/search-takeover.mjs';
 import {BOOT,buildWooTakeover,buildShopifyTakeover} from './core/takeover-export.mjs';
 import {engineDir,ENGINE_FILES} from './core/takeover-preview.mjs';
@@ -45,6 +45,26 @@ test('the rollout is one test in the production siteConfig; everything else in i
  // Copying the demo configuration to production later keeps the rollout.
  const merged=mergeSiteConfig({abTests:{[ROLLOUT_TEST]:rolloutTest(40)}},{platform:'shopify',queryParams:['q'],selectors:{},nativeCard:{},features:{fullReplace:true},replace:{},cartInterceptor:{},clickTracking:{}});
  assert.equal(rolloutOf(merged),40);
+});
+
+test('pinned visitors: written with the split, kept when only the percentage changes, validated, gone with the test',async()=>{
+ const users=fakeUsers([{_id:'a',username:'store',dbName:'shop',apiKey:'k1',credentials:{siteConfig:{x:1}}},{_id:'b',username:'staff',dbName:'shop',apiKey:'k2',credentials:{}}]);
+ const backups=await mkdtemp(join(tmpdir(),'rollout-pins-')),opts={backups,client:client(users)},test=d=>users.docs[d].credentials.siteConfig.abTests[ROLLOUT_TEST];
+ // Test mode: nobody gets Semantix except the operator's browser.
+ const r=await publishRollout(project,0,{...opts,pins:{'vis-test-abc123':'semantix'}});
+ assert.deepEqual(r.pins,{'vis-test-abc123':'semantix'});
+ assert.deepEqual(test(0).pins,{'vis-test-abc123':'semantix'});assert.deepEqual(test(1).pins,test(0).pins,'every user gets the same pins');
+ assert.equal(test(0).variants[0].weight,0);
+ assert.deepEqual(await readRollout(project,{client:client(users)}).then(x=>[x.percent,x.pins,x.consistent]),[0,{'vis-test-abc123':'semantix'},true]);
+ await publishRollout(project,25,opts);assert.deepEqual(test(1).pins,{'vis-test-abc123':'semantix'},'no pins given → the ones in production stay');assert.equal(rolloutOf(users.docs[1].credentials.siteConfig),25);
+ await publishRollout(project,25,{...opts,pins:{}});assert.equal(test(0).pins,undefined,'an empty list removes them');
+ for(const bad of [{'bad id!':'semantix'},{'vis-1':'other'},{'ab':'semantix'},['vis-123'],Object.fromEntries(Array.from({length:21},(_,i)=>['vis-'+i+'-xx','native']))])
+  await assert.rejects(publishRollout(project,10,{...opts,pins:bad}));
+ assert.equal(rolloutOf(users.docs[0].credentials.siteConfig),25,'a rejected publish writes nothing');
+ assert.deepEqual(normalizePins({' vis-1-ab ':'native'}),{'vis-1-ab':'native'});
+ await publishRollout(project,50,{...opts,pins:{'vis-test-abc123':'semantix'}});await publishRollout(project,null,opts);assert.equal(users.docs[0].credentials.siteConfig.abTests[ROLLOUT_TEST],undefined);
+ // The local engine honours pins and reports them outside the two groups.
+ const dir=engineDir();if(dir){const code=await readFile(join(dir,ENGINE_FILES['engine.js']),'utf8');assert.match(code,/function pinnedVariant/);assert.match(code,/":pinned"/);}
 });
 
 // The engine's bucket: FNV-1a of "<visitor id>:<test name>" over the variants in order.
@@ -117,7 +137,7 @@ test('the WooCommerce export is a plugin with the same boot, and both exports ex
  const siteConfig={platform:'woocommerce',queryParams:['s'],features:{fullReplace:true,autocomplete:true},selectors:{resultsGrid:['ul.products']},nativeCard:{cardTemplate:'<li class="product"><a href="{{url}}">{{name}}</a></li>'},replace:{scope:'main',root:'main'},addToCart:{mode:'engine'}};
  const engine='(function(){const S=window.SemantixSettings||{};})();',p={...project,takeover:{siteConfig}};
  const {manifest,files}=buildWooTakeover(p,{apiBase:'https://api.example.com',apiKey:'site_key_12345678',engine,now:new Date('2026-10-03T10:00:00Z')});
- assert.deepEqual(Object.keys(files),['semantix-search/semantix-search.php','semantix-search/assets/semantix-config.js','semantix-search/assets/semantix-engine.js','semantix-search/INSTALL.md','semantix-search/manifest.json']);
+ assert.deepEqual(Object.keys(files),['semantix-search/semantix-search.php','semantix-search/commerce.php','semantix-search/assets/semantix-commerce.js','semantix-search/assets/semantix-config.js','semantix-search/assets/semantix-engine.js','semantix-search/INSTALL.md','semantix-search/manifest.json']);
  assert.match(files['semantix-search/semantix-search.php'],/Plugin Name: Semantix Search/);assert.match(files['semantix-search/semantix-search.php'],/add_action\('wp_head'[\s\S]*assets\/semantix-config\.js[\s\S]*, 1\);/);
  // The configuration script, run as the page would: settings from the file, the engine URL beside it.
  const head=[],ctx={window:{},location:{pathname:'/',search:''},URLSearchParams,Date,JSON,Object,Array,Number,RegExp,localStorage:{getItem:()=>JSON.stringify({ts:Date.now(),key:'site_key_12345678',cfg:{}}),setItem:()=>{}},
