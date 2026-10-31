@@ -41,7 +41,7 @@ export function extractWithSpec(html,url,spec=DEFAULT_SPEC){
   if(f.jsonld&&product)v=flat(pick(product,f.jsonld)).trim();
   if(!v&&f.selector){const el=$(f.selector).first();v=(f.attr?el.attr(f.attr):el.text())?.replace(/\s+/g,' ').trim()||'';}
   if(v&&f.pattern){const m=v.match(rx(f.pattern));v=m?(m[1]??m[0]).trim():'';}
-  if(name==='availability')v=v?(rx(f.instock||'instock|in stock|במלאי').test(v)?'instock':'outofstock'):'';
+  if(name==='availability')v=v?(rx(f.instock||'instock|in stock|במלאי').test(v)?'instock':/backorder|preorder/i.test(v)?'onbackorder':'outofstock'):'';
   if(v)out[name]=v.slice(0,name==='description'?4000:500);
  }
  const key=productKey(url,spec);

@@ -23,6 +23,11 @@ services:
         sync: false
       - key: STUDIO_DASHBOARD_MONGODB_URI
         sync: false
+      # Automatic site scans run on Render by default (core/crawl-schedule.mjs). Hours between scans, and dbNames or hosts left out.
+      - key: STUDIO_AUTO_SCAN_HOURS
+        value: "6"
+      - key: STUDIO_AUTO_SCAN_SKIP
+        value: steimatzky
       # Client Shopify apps open the studio here (install + daily product feed, core/shopify-feed.mjs).
       - key: STUDIO_PUBLIC_URL
         value: https://tenant-studio.onrender.com

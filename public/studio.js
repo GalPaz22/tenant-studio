@@ -406,7 +406,7 @@ async function renderCrawler(){
  if(project?.id!==id)return;
  const act=async(path,body,label)=>{try{const r=await api('/projects/'+id+'/crawl/'+path,body);if(r.added!==undefined)toast(`מוזגו ${r.pages} דפים: ${r.added} מוצרים נוספו, ${r.updated} עודכנו, ${r.authorsFilled} מחברים הושלמו${r.impact?` · מול הקיים: ${Math.round(r.impact.keptBefore*100)}% → ${Math.round(r.impact.keptAfter*100)}%${r.impact.lost.length?` · נפגעו: ${r.impact.lost.map(x=>x.query).join(', ')}`:''}`:''}`);if(path==='merge')project=await api('/projects/'+id);}catch(err){toast(err.message);}renderCrawler();};
  const s=c.settings,pct=c.total?Math.round(c.done/c.total*100):0,num=v=>(v??0).toLocaleString('he-IL');
- const rate=el('input',{type:'number',min:'0.5',max:'60',step:'0.5',value:String(s.rateMs/1000)}),auto=el('input',{type:'checkbox',checked:s.autoMerge}),src=Object.fromEntries(['clicks','sitemap','catalog'].map(k=>[k,el('input',{type:'checkbox',checked:s.sources[k]})]));
+ const rate=el('input',{type:'number',min:'0.5',max:'60',step:'0.5',value:String(s.rateMs/1000)}),width=el('input',{type:'number',min:'1',max:'6',step:'1',value:String(s.concurrency||3)}),auto=el('input',{type:'checkbox',checked:s.autoMerge}),src=Object.fromEntries(['clicks','sitemap','catalog'].map(k=>[k,el('input',{type:'checkbox',checked:s.sources[k]})]));
  fill(root,
   el('h3',{},'סורק האתר'),
   el('p',{class:'meta'},`סורק את דפי המוצר הציבוריים של ${project.url||'האתר'}: שם, מחבר, הוצאה, מחיר ומלאי. מזדהה בשמו ומכבד robots.txt. ההתקדמות נשמרת במסד, ${c.workerMode==='studio'?'הסטודיו מריץ את הסריקה בעצמו, במקביל ללקוחות אחרים, וממשיך מאותה נקודה אחרי הפעלה מחדש.':`והעבודה נעשית ב־worker ${c.workerMode==='local'?'שרץ במחשב הזה':'בענן (Render)'} — ממשיך גם כשהסטודיו סגור.`}`),
@@ -422,9 +422,10 @@ async function renderCrawler(){
    !c.running&&c.desired!=='running'&&c.status!=='none'?el('button',{type:'button',class:'ghost',title:'בונה מחדש את רשימת הדפים (קליקים, מפת אתר, קטלוג) ושומר את מה שכבר נאסף',onclick:()=>act('start',{reseed:true})},'רענן רשימת דפים'):null),
   el('fieldset',{},el('legend',{},'הגדרות'),
    el('label',{},'שניות בין דפים',rate),
+   el('label',{},'דפים במקביל',width),
    el('label',{},auto,'מיזוג אוטומטי לקטלוג כל 10 דקות'),
    el('label',{},src.clicks,'מוצרים שקונים לחצו עליהם (ראשונים)'),el('label',{},src.sitemap,'מפת האתר'),el('label',{},src.catalog,'מוצרים שכבר בקטלוג (רענון מחיר ומלאי)'),
-   el('button',{type:'button',class:'ghost',onclick:()=>act('settings',{rateMs:Math.round(Number(rate.value)*1000),autoMerge:auto.checked,sources:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,v.checked]))})},'שמור הגדרות'),
+   el('button',{type:'button',class:'ghost',onclick:()=>act('settings',{rateMs:Math.round(Number(rate.value)*1000),concurrency:Number(width.value),autoMerge:auto.checked,sources:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,v.checked]))})},'שמור הגדרות'),
    el('p',{class:'meta'},'שינוי קצב ומקורות חל בהפעלה הבאה של הסורק; שינוי מקורות דורש ״רענן רשימת דפים״.')),
   scraperSection(sc,id),
   c.recentErrors?.length?el('details',{},el('summary',{},'שגיאות אחרונות'),el('ul',{},c.recentErrors.map(e=>el('li',{},`${e.url} — ${e.error}`)))):null);

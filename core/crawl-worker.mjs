@@ -1,35 +1,50 @@
 import {hostname} from 'node:os';
 import {randomUUID} from 'node:crypto';
-import {seedCrawl,runCrawl,readClickedUrls,readCatalogUrls} from './site-crawler.mjs';
+import {spawn} from 'node:child_process';
+import {openSync,closeSync,mkdirSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {seedCrawl,runCrawl,sweepStoreApi,pagesToRead,readClickedUrls,readCatalogUrls} from './site-crawler.mjs';
+import {productKey,DEFAULT_SPEC} from './scraper-builder.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 // One worker serves every tenant whose crawl the studio set to "running". It needs no local project files: the
 // target (site URL, client database) comes with the job, so the same code runs on a laptop or as a Render worker.
-export async function workOnce(store,{owner,projectId=null,seed=seedCrawl,run=runCrawl,log=console.log,shouldExit=()=>false,beat=()=>{},seedOptions={}}={}){
+export async function workOnce(store,{owner,projectId=null,seed=seedCrawl,run=runCrawl,sweep=sweepStoreApi,afterScan=async()=>{},log=console.log,shouldExit=()=>false,beat=()=>{},seedOptions={}}={}){
  const job=await store.claim(owner,projectId);if(!job)return false;
- const id=job._id,settings={rateMs:1000,sources:{clicks:true,sitemap:true,catalog:true},...job.settings};
+ const id=job._id,settings={rateMs:1000,concurrency:3,sources:{clicks:true,sitemap:true,catalog:true},...job.settings},spec=job.target?.spec||null;
+ let stop=false,exitReason=null;
+ const halted=ctl=>{if(!ctl||ctl.desired!=='running'){stop=true;exitReason='stopped-by-studio';}if(shouldExit()){stop=true;exitReason='worker-exit';}};
+ // Seeding, a store listing and a long backoff write no checkpoints: the lease and a stop from the studio do not wait for one.
+ const keep=setInterval(()=>store.renew(id,owner).then(halted).catch(()=>{}),60000);keep.unref?.();
+ try{
  let state=await store.read(id);
- if(job.reseedRequested||!state.queue.length){
+ if(job.rescanRequested||job.reseedRequested||!state.queue.length){
   log(id,'seeding',job.target?.url);
   const project={id,url:job.target.url,existingClient:job.target.dbName?{dbName:job.target.dbName}:null};
   const fresh=await seed(project,{sources:settings.sources,clicks:readClickedUrls,catalogUrls:readCatalogUrls,spec:job.target.spec||null,...seedOptions});
-  // Pages already crawled stay; only new pages are queued.
-  // A requested reseed is a fresh pass, including previously crawled URLs (prices/stock may have changed).
-  // Only an automatic queue recovery skips pages we already have.
-  if(!job.reseedRequested){const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(u.split('/').pop()));}
-  state={...state,...fresh,products:state.products,errors:state.errors,startedAt:state.startedAt||fresh.startedAt,next:0};
-  await store.save(state,{queue:true});await store.control(id,{reseedRequested:false});
-  log(id,'queue',state.queue.length,JSON.stringify(state.sources));
+  const keyOf=u=>productKey(u,spec||DEFAULT_SPEC),found=fresh.queue.length;
+  // A WooCommerce store answers most of the catalog from one listing; only what it does not cover needs a page read.
+  const listing=job.target?.platform==='woocommerce'&&spec&&!job.fullRescanRequested?await sweep({...fresh,products:state.products},{spec,rateMs:settings.rateMs,shouldStop:()=>stop||shouldExit(),log:(...parts)=>{beat();log(id,...parts);}}):null;
+  // Keep collected data available for merging. A rescan rereads what may have changed (all pages when asked for a full one,
+  // or when the sitemap has no dates); discovery only skips known product keys, including URLs with a trailing slash.
+  if(!job.rescanRequested){const crawled=new Set(Object.keys(state.products));fresh.queue=fresh.queue.filter(u=>!crawled.has(keyOf(u)));}
+  else if(!job.fullRescanRequested)fresh.queue=pagesToRead(fresh.queue,{products:state.products,lastmod:fresh.lastmod,swept:listing?.swept,sweepComplete:listing?.complete,keyOf});
+  delete fresh.lastmod;
+  state={...state,...fresh,products:state.products,errors:job.rescanRequested?{}:state.errors,startedAt:job.rescanRequested?fresh.startedAt:state.startedAt||fresh.startedAt,next:0};
+  await store.save(state,{queue:true});await store.control(id,{reseedRequested:false,rescanRequested:false,fullRescanRequested:false});
+  log(id,'queue',state.queue.length,'of',found,JSON.stringify(state.sources),listing?`listing ${listing.swept.size} products, ${listing.changed} changed`:'');
  }
- let stop=false,exitReason=null;
  state.runStartedAt=new Date().toISOString();state.runStartNext=state.next;state.failures=0;delete state.blockedReason;
- const guarded={save:async s=>{await store.save(s);beat();const ctl=await store.renew(id,owner);if(!ctl||ctl.desired!=='running'){stop=true;exitReason='stopped-by-studio';}if(shouldExit()){stop=true;exitReason='worker-exit';}}};
- await run(state,{store:guarded,spec:job.target?.spec||null,rateMs:settings.rateMs,shouldStop:()=>stop||shouldExit(),onProgress:s=>log(id,`${s.next}/${s.queue.length}`,'products',Object.keys(s.products).length,s.status)});
+ const guarded={save:async(s,options)=>{await store.save(s,options);beat();halted(await store.renew(id,owner));}};
+ await run(state,{store:guarded,spec,rateMs:settings.rateMs,concurrency:settings.concurrency,shouldStop:()=>stop||shouldExit(),onProgress:s=>log(id,`${s.next}/${s.queue.length}`,'products',Object.keys(s.products).length,s.status)});
  await store.save(state);
  // A worker shutting down (Render deploy/restart) leaves the job running so the next worker resumes it.
  const finished=['done','blocked'].includes(state.status);
+ // A finished scan reaches the store's live rows before the job is released; a failure here is logged, not a failed scan.
+ if(state.status==='done')try{log(id,'store rows',JSON.stringify(await afterScan(state,job)));}catch(e){log(id,'store rows failed',e.message);}
  await store.release(id,owner,{desired:finished?state.status:exitReason==='worker-exit'||shouldExit()?undefined:'stopped'});
  log(id,'released',state.status,exitReason||'');
+ }finally{clearInterval(keep);}
  return true;
 }
 export async function workLoop(store,{idleMs=15000,shouldExit=()=>false,log=console.log,...options}={}){
@@ -58,4 +73,14 @@ export function runInProcess(store,projectId,{log=console.log,...options}={}){
  const run=(async()=>{try{await workOnce(store,{owner,projectId,log,...options});}catch(e){log(projectId,'crawl error',e.message);}finally{inProcess.delete(projectId);}})();
  inProcess.set(projectId,run);return run;
 }
-export const runningInProcess=projectId=>inProcess.has(projectId);
+// The studio's default: the same job in a process of its own, which keeps running through a studio restart.
+const spawned=new Map(),root=fileURLToPath(new URL('..',import.meta.url));
+export function spawnCrawl(projectId,dataDir,{log=console.log,launch=spawn}={}){
+ if(spawned.has(projectId))return spawned.get(projectId);
+ mkdirSync(`${dataDir}/crawls`,{recursive:true});const out=openSync(`${dataDir}/crawls/${projectId}.log`,'a');
+ const child=launch(process.execPath,[root+'crawl-worker.mjs','--project',projectId],{cwd:root,detached:true,stdio:['ignore',out,out],env:{...process.env,STUDIO_DATA_DIR:dataDir}});
+ closeSync(out);child.unref();spawned.set(projectId,child);
+ const done=result=>{if(spawned.get(projectId)===child)spawned.delete(projectId);log(projectId,'crawl process ended',result);};
+ child.once('exit',done);child.once('error',e=>done(e.message));return child;
+}
+export const runningInProcess=projectId=>inProcess.has(projectId)||spawned.has(projectId);

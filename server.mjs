@@ -12,7 +12,8 @@ import {buildScraper,sampleProductUrls} from './core/scraper-builder.mjs';
 import {mergeCrawl,get as getPage} from './core/site-crawler.mjs';
 import {createCrawlDb} from './core/crawl-store.mjs';
 import {crawlStatus,crawlSettings,crawlTarget,startCrawl,stopCrawl,validateSettings,ensureLocalWorker} from './core/crawl-control.mjs';
-import {runInProcess,runningInProcess} from './core/crawl-worker.mjs';
+import {runInProcess,runningInProcess,spawnCrawl} from './core/crawl-worker.mjs';
+import {scanTick,scansEnabled} from './core/crawl-schedule.mjs';
 import {conciergeTurn,decideTrigger,outOfStockHits,settingsOf} from './core/concierge.mjs';
 import {analyzeExisting,reindexExisting} from './core/fast-track.mjs';
 import {loadExistingClient,refreshSourceFields,dbFields,dbSearch,importDbField} from './existing-client.mjs';
@@ -632,17 +633,24 @@ async function mergeCrawled(id){const s=await needCrawls().read(id);if(!s||!Obje
  // A merge changes what exists and what is in stock: measure it against production and report, do not block.
  let impact=null;if(before){evaluateStored(p);const lost=baselineRegressions(before,p.baselineEval);impact={keptBefore:before.summary.keptShare,keptAfter:p.baselineEval.summary.keptShare,lost:lost.slice(0,20).map(r=>({query:r.query,missing:(r.missing||[]).map(m=>m.title)}))};}
  await persist(p);runtimes.clear();return {...counts,pages:Object.keys(s.products).length,impact};}
-const crawlView=async id=>{const p=await store.read(id);return {...crawlStatus(await needCrawls().meta(id),crawlSettings(p),p.siteCrawl||null),workerMode:crawlMode(),inProcess:runningInProcess(id)};};
+// Crawl status is polled every few seconds: it reads the project's small meta file, never the full project file.
+const crawlProject=async id=>{const m=await store.meta(id);return {...m,existingClient:m.dbName?{dbName:m.dbName}:null};};
+const crawlView=async id=>{const p=await crawlProject(id);return {...crawlStatus(await needCrawls().meta(id),crawlSettings(p),p.siteCrawl),workerMode:crawlMode(),inProcess:runningInProcess(id)};};
 // Default: the studio runs crawls itself. STUDIO_CRAWL_WORKER=local keeps the detached local worker, =remote a Render worker.
 const crawlMode=()=>['local','remote'].includes(process.env.STUDIO_CRAWL_WORKER)?process.env.STUDIO_CRAWL_WORKER:'studio';
 const crawlLog=(id,...parts)=>console.log('[crawl]',id.slice(0,8),...parts);
 // After a restart, crawls that should be running continue in this studio once their previous lease lapses.
+// A crawl runs in its own process, so a heavy project parse in the studio cannot time out its requests, and a studio
+// crash or restart cannot end it (tests with an injected store run it in this process).
+const launchCrawl=id=>app.locals.crawlStore?runInProcess(app.locals.crawlStore,id,{log:crawlLog}):spawnCrawl(id,dataDir,{log:crawlLog});
 async function resumeCrawls(){if(crawlMode()!=='studio'||!crawls)return;
- const tick=async()=>{for(const item of await store.metas()){if(runningInProcess(item.id))continue;const m=await crawls.meta(item.id).catch(()=>null);if(m?.desired==='running'&&(!m.lease||Date.parse(m.lease.until)<Date.now()))runInProcess(crawls,item.id,{log:crawlLog});}};
- await tick();setInterval(()=>tick().catch(e=>console.error('crawl resume',e.message)),60000).unref();}
+ // The job list lives in Mongo: on Render there are no project files to walk.
+ const tick=async()=>{for(const m of await crawls.list()){if(runningInProcess(m._id))continue;if(m.desired==='running'&&(!m.lease||Date.parse(m.lease.until)<Date.now()))launchCrawl(m._id);}};
+ await tick();setInterval(()=>tick().catch(e=>console.error('crawl resume',e.message)),60000).unref();
+ if(scansEnabled())setInterval(()=>scanTick(crawls,{launch:launchCrawl,log:crawlLog}).catch(e=>console.error('auto scan',e.message)),10*60000).unref();}
 app.get('/api/projects/:id/crawl',route(async(req,res)=>res.json(await crawlView(req.params.id))));
-app.post('/api/projects/:id/crawl/start',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);await startCrawl(p,needCrawls(),{reseed:req.body?.reseed===true});if(crawlMode()==='local')await ensureLocalWorker(dataDir);else if(crawlMode()==='studio')runInProcess(needCrawls(),p.id,{log:crawlLog});res.json(await crawlView(p.id));})));
-app.post('/api/projects/:id/crawl/stop',route(async(req,res)=>{const p=await store.read(req.params.id);await stopCrawl(p,needCrawls());res.json(await crawlView(p.id));}));
+app.post('/api/projects/:id/crawl/start',route(async(req,res)=>locked(req.params.id,async()=>{const p=await crawlProject(req.params.id);await startCrawl(p,needCrawls(),{reseed:req.body?.reseed===true,rescan:req.body?.rescan===true,full:req.body?.full===true});if(crawlMode()==='local')await ensureLocalWorker(dataDir);else if(crawlMode()==='studio')launchCrawl(p.id);res.json(await crawlView(p.id));})));
+app.post('/api/projects/:id/crawl/stop',route(async(req,res)=>{const p=await crawlProject(req.params.id);await stopCrawl(p,needCrawls());res.json(await crawlView(p.id));}));
 app.post('/api/projects/:id/crawl/settings',route(async(req,res)=>locked(req.params.id,async()=>{const p=await store.read(req.params.id);p.crawler={...p.crawler,...validateSettings(req.body||{})};await persist(p);const meta=await needCrawls().meta(p.id);if(meta)await needCrawls().control(p.id,{settings:crawlSettings(p)});res.json(await crawlView(p.id));})));
 app.post('/api/projects/:id/crawl/merge',route(async(req,res)=>locked(req.params.id,async()=>{const counts=await mergeCrawled(req.params.id);res.json({...counts,crawl:await crawlView(req.params.id)});})));
 // Auto-merge: every 10 minutes, tenants that enabled it get newly crawled pages merged (skipped while the project is busy).
@@ -692,7 +700,7 @@ app.post('/api/projects/:id/processing/:plan/run',route(async(req,res)=>streamed
 })));
 // Dedicated scraper: the planner model writes a product-page spec from sample pages; validated against the catalog,
 // activated by the operator, then used by the tenant's crawl (a reseed builds the page list with its URL rule).
-app.get('/api/projects/:id/scraper',route(async(req,res)=>{const p=await store.read(req.params.id);res.json(p.scraper||{status:'none'});}));
+app.get('/api/projects/:id/scraper',route(async(req,res)=>{const m=await store.meta(req.params.id);res.json(m.scraper||{status:'none'});}));
 app.post('/api/projects/:id/scraper/build',route(async(req,res)=>streamed(req,res,async(send,guard)=>{
  const p=await store.read(req.params.id);if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS');
  const fetchPage=app.locals.fetchPage||(async url=>{await new Promise(r=>setTimeout(r,1000));return getPage(url);});

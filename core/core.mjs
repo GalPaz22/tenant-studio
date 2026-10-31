@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 // Tenant stock policy (pipeline.outOfStock): "hide" (default) shows only in-stock products; "last" also shows out-of-stock
 // ones after all in-stock results; "show" shows them in their natural place. Hidden products are never shown.
 export const stockPolicy=client=>['last','show'].includes(client?.pipeline?.outOfStock)?client.pipeline.outOfStock:'hide';
-export const sellable=(p,client)=>!!p&&!p.hidden&&(p.stockStatus==='instock'||stockPolicy(client)!=='hide');
+// A backorder product can be bought from the store's own page (Shipi: 667 of them), so search treats it like stock.
+export const sellable=(p,client)=>!!p&&!p.hidden&&(p.stockStatus==='instock'||p.stockStatus==='onbackorder'||stockPolicy(client)!=='hide');
 export const normalize = value => String(value ?? '').normalize('NFKC').toLowerCase()
   .normalize('NFD').replace(/\p{M}/gu,'').replace(/[®™]/g,'')
   .replace(/[׳״'’`"“”„«»″‟]/g, '').replace(/[-–—()[\],:;!?]/g, ' ').replace(/\s+/g, ' ').trim();

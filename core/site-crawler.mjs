@@ -1,11 +1,12 @@
+import {scrapeFetch} from './egress.mjs';
 import {MongoClient} from 'mongodb';
 import {buildSearchIndex} from './search-index.mjs';
 import {processProduct} from './core.mjs';
-import {hash} from './catalog.mjs';
+import {hash,clean} from './catalog.mjs';
 import {extractWithSpec,productKey,DEFAULT_SPEC,rx} from './scraper-builder.mjs';
 
-// Honest, identifiable crawler for a client's own public product pages: robots.txt is obeyed, one request at a time,
-// and the crawl stops by itself when the host starts refusing (redirect off-site, 403/429/503).
+// Honest, identifiable crawler for a client's own public product pages: robots.txt is obeyed, a few requests at a time
+// (one under a crawl-delay or after a refusal), and the crawl stops by itself when the host starts refusing (redirect off-site, 403/429/503).
 export const CRAWLER_UA='Mozilla/5.0 (compatible; SemantixCatalogBot/1.0; +https://semantix.co.il/bot)';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const productNumber=url=>{try{const m=new URL(url).pathname.match(/\/(?:digital\/)?(\d{6,14})\/?$/);return m?m[1]:null;}catch{return null;}};
@@ -34,26 +35,42 @@ export function parseProductPage(html,url){
   author:list(d.author)||null,publisher:list(d.publisher)||null,type:String(d['@type']||''),isbn:d.isbn||null};
 }
 
-export async function get(url,{fetcher=fetch}={}){
+// Retry-After is either seconds or an HTTP date; anything unreadable means "no hint".
+export function retryAfter(value,now=Date.now()){
+ if(!value)return 0;const s=Number(value);if(Number.isFinite(s))return Math.max(0,s*1000);
+ const t=Date.parse(value);return Number.isFinite(t)?Math.max(0,t-now):0;
+}
+// A refusing host gets exponentially longer pauses (1, 2, 4… up to 30 minutes, or longer if it asks),
+// and only after this many refusals in a row is the crawl declared blocked. An off-site redirect is a deliberate
+// signal and stops sooner.
+export const REFUSAL_PATIENCE=8,OFFSITE_PATIENCE=3,MAX_PACE_MS=20000;
+export const backoffMs=(failures,hintMs=0)=>Math.min(2*3600000,Math.max(hintMs,Math.min(30*60000,60000*2**(failures-1))));
+// Sleeps in short slices so a stop from the studio is honored during a long backoff.
+const pauseUnlessStopped=async(ms,shouldStop)=>{for(const until=Date.now()+ms;Date.now()<until&&!shouldStop();)await sleep(Math.min(15000,until-Date.now()));};
+
+export async function get(url,{fetcher=scrapeFetch}={}){
  const r=await fetcher(url,{redirect:'manual',headers:{'User-Agent':CRAWLER_UA,Accept:'text/html,application/xml;q=0.9,*/*;q=0.8'},signal:AbortSignal.timeout(20000)});
  const location=r.headers.get('location');
- if(r.status>=300&&r.status<400){const next=location&&new URL(location,url);if(!next||next.host!==new URL(url).host){const e=Error('הופנה אל '+(next?.host||'?'));e.blocked=true;throw e;}return get(next.href,{fetcher});}
- if([403,429,503].includes(r.status)){const e=Error('HTTP '+r.status);e.blocked=true;throw e;}
+ if(r.status>=300&&r.status<400){const next=location&&new URL(location,url);if(!next||next.host!==new URL(url).host){const e=Error('הופנה אל '+(next?.host||'?'));e.blocked=true;e.offsite=true;throw e;}return get(next.href,{fetcher});}
+ if([403,429,503].includes(r.status)){const e=Error('HTTP '+r.status);e.blocked=true;e.retryAfterMs=retryAfter(r.headers.get('retry-after'));throw e;}
  if(r.status!==200){const e=Error('HTTP '+r.status);e.status=r.status;throw e;}
  return r.text();
 }
 const locs=xml=>[...String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map(m=>m[1].replace(/&amp;/g,'&'));
+const urlEntries=xml=>{const found=[...String(xml).matchAll(/<url>([\s\S]*?)<\/url>/g)].map(m=>({loc:locs(m[1])[0],lastmod:m[1].match(/<lastmod>\s*([^<\s]+)/)?.[1]})).filter(e=>e.loc);return found.length?found:locs(xml).map(loc=>({loc}));};
+// One failed sitemap would silently drop a thousand products, so a passing failure is tried again.
+async function readMap(url,fetcher){for(let tries=0;;tries++){try{return await get(url,{fetcher});}catch(e){if(tries>=2||e.status<500)return '';await sleep(2000);}}}
 
 // Discovery: clicked products (what shoppers want) first, then product sitemaps, then product URLs already in the catalog.
-export async function seedCrawl(project,{fetcher=fetch,clicks=readClickedUrls,catalogUrls=p=>(p.productCards||[]).map(c=>c.url).filter(Boolean),sources:use={clicks:true,sitemap:true,catalog:true},spec=null}={}){
- const origin=new URL(project.url).origin,robots=robotsRules(await get(origin+'/robots.txt',{fetcher}).catch(()=>'')),seen=new Map(),sources={clicks:0,sitemap:0,catalog:0};
+export async function seedCrawl(project,{fetcher=scrapeFetch,clicks=readClickedUrls,catalogUrls=p=>(p.productCards||[]).map(c=>c.url).filter(Boolean),sources:use={clicks:true,sitemap:true,catalog:true},spec=null}={}){
+ const origin=new URL(project.url).origin,robots=robotsRules(await get(origin+'/robots.txt',{fetcher}).catch(()=>'')),seen=new Map(),sources={clicks:0,sitemap:0,catalog:0},lastmod={};
  // With a dedicated spec the product key and URL come from its productUrl rule; the default keeps numeric-id URLs.
- const add=(url,source)=>{const n=spec?productKey(url,spec):productNumber(url);if(!n||seen.has(n))return;let clean;try{const u=new URL(url,origin);if(u.origin!==origin)return;u.hash='';clean=spec?u.href:origin+'/'+n;}catch{return;}if(!robotsAllows(robots,clean))return;seen.set(n,clean);sources[source]++;};
+ const add=(url,source,changed)=>{const n=spec?productKey(url,spec):productNumber(url);if(!n)return;if(seen.has(n)){if(changed)lastmod[seen.get(n)]=changed;return;}let target;try{const u=new URL(url,origin);if(u.origin!==origin)return;u.hash='';target=spec?u.href:origin+'/'+n;}catch{return;}if(!robotsAllows(robots,target))return;seen.set(n,target);if(changed)lastmod[target]=changed;sources[source]++;};
  if(use.clicks)try{for(const u of await clicks(project))add(u,'clicks');}catch{}
- if(use.sitemap){const index=await get(origin+'/sitemap.xml',{fetcher}).catch(()=>'');
-  for(const map of locs(index).filter(u=>rx(spec?.sitemapFilter||'product').test(u))){await sleep(1000);for(const u of locs(await get(map,{fetcher}).catch(()=>'')))add(u,'sitemap');}}
+ if(use.sitemap){const index=await readMap(origin+'/sitemap.xml',fetcher);
+  for(const map of locs(index).filter(u=>rx(spec?.sitemapFilter||'product').test(u))){await sleep(1000);for(const e of urlEntries(await readMap(map,fetcher)))add(e.loc,'sitemap',e.lastmod);}}
  if(use.catalog)try{for(const u of await catalogUrls(project))add(u,'catalog');}catch{}
- return {projectId:project.id,origin,status:'ready',robots,sources,queue:[...seen.values()],next:0,products:{},errors:{},failures:0,startedAt:new Date().toISOString(),dedicated:!!spec};
+ return {projectId:project.id,origin,status:'ready',robots,sources,queue:[...seen.values()],lastmod,next:0,products:{},errors:{},failures:0,startedAt:new Date().toISOString(),dedicated:!!spec};
 }
 export async function readClickedUrls(project){
  const uri=process.env.STUDIO_DASHBOARD_MONGODB_URI||process.env.MONGODB_URI;if(!project.existingClient||!uri)return [];
@@ -64,19 +81,62 @@ export async function readClickedUrls(project){
  }finally{await c.close();}
 }
 
+// WooCommerce's public Store API lists every visible product with stock, price and categories, 100 to a request, so it
+// replaces 100 page reads. Products the store hides from it (Shipi's out-of-stock pages) stay with the page crawl.
+const wooPage=(r,key,at)=>{const unit=10**(r.prices?.currency_minor_unit??2),price=Number(r.prices?.price)/unit,regular=Number(r.prices?.regular_price)/unit;
+ return {sku:key,key,productId:r.id,regularPrice:regular>0?regular:null,name:clean(r.name),url:r.permalink,image:r.images?.[0]?.src||null,description:clean(r.short_description||r.description),price:price>0?price:null,currency:r.prices?.currency_code||null,stockStatus:r.is_on_backorder?'onbackorder':r.is_in_stock?'instock':'outofstock',categories:(r.categories||[]).map(c=>clean(c.name)).filter(Boolean),crawledAt:at};};
+const samePage=(a,b)=>!!a?.categories&&['productId','name','url','image','price','regularPrice','stockStatus'].every(k=>a[k]===b[k]);
+export async function sweepStoreApi(state,{spec,fetcher=scrapeFetch,rateMs=1000,pause=sleep,shouldStop=()=>false,log=()=>{}}={}){
+ const swept=new Set(),at=new Date().toISOString();let complete=false,changed=0;
+ for(let page=1;!shouldStop();page++){
+  const url=`${state.origin}/wp-json/wc/store/v1/products?per_page=100&page=${page}`;let rows=null;
+  for(let tries=0;tries<3&&!rows;tries++){try{rows=JSON.parse(await get(url,{fetcher}));}catch(e){if(e.status===400){rows=[];break;}log('store api',page,e.message);if(tries<2)await pause(rateMs*5);}}
+  // The listing only saves page reads: whatever it did not cover is left to the page crawl.
+  if(!Array.isArray(rows))break;
+  for(const r of rows){const key=r?.permalink&&productKey(r.permalink,spec);if(!key)continue;swept.add(key);const fresh=wooPage(r,key,at),old=state.products[key];if(samePage(old,fresh))continue;state.products[key]={...old,...fresh};changed++;}
+  log('store api',page,swept.size,'products',changed,'changed');
+  if(rows.length<100){complete=true;break;}
+  await pause(rateMs);
+ }
+ return {swept,complete,changed};
+}
+// The pages worth reading after a listing: unseen ones, ones the sitemap says changed since we read them, and ones the
+// listing showed last time but no longer does (sold out or hidden). A sitemap without dates leaves every page to read.
+export function pagesToRead(queue,{products={},lastmod={},swept=new Set(),sweepComplete=false,keyOf}){
+ return queue.filter(url=>{const key=keyOf(url);if(swept.has(key))return false;const page=products[key];if(!page)return true;
+  if(sweepComplete&&['instock','onbackorder'].includes(page.stockStatus))return true;
+  return !lastmod[url]||!page.crawledAt||Date.parse(lastmod[url])>Date.parse(page.crawledAt);});
+}
+
+// A passing failure (timeout, dropped connection, server error) is tried again at the end of the queue instead of
+// staying a hole in the catalog until the next full rescan; a missing page is not.
+const transient=message=>/^HTTP 5|abort|timeout|fetch failed|ECONN|ENOTFOUND|socket|terminated|פרוקסי/i.test(message);
+export const RETRY_PASSES=2;
 // Runs (or resumes) the crawl, checkpointing every few pages. Returns the final state.
-export async function runCrawl(state,{store,fetcher=fetch,rateMs=1000,limit=Infinity,onProgress=()=>{},shouldStop=()=>false,spec=null}={}){
- const delay=Math.max(rateMs,(state.robots?.delay||0)*1000);let fetched=0;state.status='running';await store.save(state);
- while(state.next<state.queue.length&&fetched<limit){
+export async function runCrawl(state,{store,fetcher=scrapeFetch,rateMs=1000,limit=Infinity,onProgress=()=>{},shouldStop=()=>false,spec=null,pause=pauseUnlessStopped,concurrency=1}={}){
+ // paceMs is the learned gap between batches: it doubles on every refusal and drifts back toward the base on success,
+ // and it is saved, so a resumed crawl keeps the pace the host tolerated. A refusal also drops to one page at a time.
+ const base=Math.max(rateMs,(state.robots?.delay||0)*1000);state.paceMs=Math.min(MAX_PACE_MS,Math.max(base,state.paceMs||0));
+ let fetched=0,saved=0,passes=0,width=state.robots?.delay?1:Math.max(1,concurrency);state.dirty=new Set();state.status='running';await store.save(state);
+ const read=async url=>{const html=await get(url,{fetcher});return spec?extractWithSpec(html,url,spec):parseProductPage(html,url);};
+ while(fetched<limit){
   if(shouldStop()){state.status='stopped';break;}
-  const url=state.queue[state.next];
-  try{const html=await get(url,{fetcher}),page=spec?extractWithSpec(html,url,spec):parseProductPage(html,url),key=page&&(page.key||page.sku);if(key)state.products[key]={...page,sku:key,crawledAt:new Date().toISOString()};else state.errors[url]='אין נתוני מוצר בדף';state.failures=0;state.next++;}
-  catch(e){
-   if(e.blocked){state.failures++;if(state.failures>=3){state.status='blocked';state.blockedReason=e.message;break;}await sleep(60000*state.failures);continue;}
-   if(Object.keys(state.errors).length<2000)state.errors[url]=e.message;state.next++;
-  }
-  fetched++;if(fetched%20===0){await store.save(state);onProgress(state);}
-  await sleep(delay);
+  if(state.next>=state.queue.length){const again=passes<RETRY_PASSES?Object.keys(state.errors).filter(u=>transient(state.errors[u])):[];if(!again.length)break;passes++;state.queue.push(...again);await store.save(state,{queue:true});continue;}
+  // A batch is read together and applied in queue order, so the checkpoint never moves past an unread page.
+  const batch=state.queue.slice(state.next,state.next+width),results=await Promise.allSettled(batch.map(read));let refused=null;
+  for(const [i,result] of results.entries()){const url=batch[i],e=result.reason;
+   if(e?.blocked){refused=e;break;}
+   if(result.status==='fulfilled'){const page=result.value,key=page&&(page.key||page.sku);if(key){state.products[key]={...page,sku:key,crawledAt:new Date().toISOString()};state.dirty.add(key);delete state.errors[url];}else state.errors[url]='אין נתוני מוצר בדף';state.failures=0;state.paceMs=Math.max(base,Math.round(state.paceMs*0.97));}
+   else if(Object.keys(state.errors).length<2000)state.errors[url]=e.message;
+   state.next++;fetched++;}
+  if(refused){
+   width=1;state.failures++;state.paceMs=Math.min(MAX_PACE_MS,Math.max(1000,base,state.paceMs)*2);
+   if(state.failures>=(refused.offsite?OFFSITE_PATIENCE:REFUSAL_PATIENCE)){state.status='blocked';state.blockedReason=refused.message;break;}
+   await store.save(state);onProgress(state);
+   await pause(backoffMs(state.failures,refused.retryAfterMs),shouldStop);
+   continue;}
+  if(fetched-saved>=20){saved=fetched;await store.save(state);onProgress(state);}
+  await pause(state.paceMs,shouldStop);
  }
  if(state.status==='running')state.status=state.next>=state.queue.length?'done':'paused';
  await store.save(state);onProgress(state);return state;
@@ -89,7 +149,7 @@ export function mergeCrawl(p,state,spec=null){
  for(const c of cards){const n=keyOf(c.url)||String(c.id).split(':').pop();if(n)byNumber.set(n,c);}
  const sample=cards.find(c=>keyOf(c.url)&&String(c.id).endsWith(keyOf(c.url))),prefix=sample?String(sample.id).slice(0,-keyOf(sample.url).length):'crawl:';
  const profile=p.revisions.at(-1).profile,client={...profile,tenantId:p.id,version:`studio-${p.revisions.length}`,publishedStatuses:['ACTIVE','publish']};
- const counts={updated:0,added:0,stockChanged:0,authorsFilled:0};
+ const counts={updated:0,added:0,stockChanged:0,authorsFilled:0},raws=new Map((p.catalog?.products||[]).map(r=>[String(r.id),r]));
  for(const page of Object.values(state.products||{})){
   const at=page.crawledAt,card=byNumber.get(page.sku);
   if(card){
@@ -98,17 +158,20 @@ export function mergeCrawl(p,state,spec=null){
    if(page.author&&!specs.author){specs.author=page.author;counts.authorsFilled++;touched=true;}
    if(page.publisher&&!specs.publisher){specs.publisher=page.publisher;touched=true;}
    for(const [k,v] of Object.entries(page.extra||{}))if(v&&!specs[k]){specs[k]=v;touched=true;}
-   if(page.stockStatus!=='unknown'&&page.stockStatus!==card.stockStatus){card.stockStatus=page.stockStatus;counts.stockChanged++;touched=true;}
-   if(page.price!==null&&page.price!==card.price){card.price=page.price;touched=true;}
+   // The raw row changes too: a rebuild starts from it, and the card and the row must not tell two stories.
+   const raw=raws.get(String(card.id));
+   if(page.stockStatus!=='unknown'&&page.stockStatus!==card.stockStatus){card.stockStatus=page.stockStatus;if(raw)raw.stockStatus=page.stockStatus;counts.stockChanged++;touched=true;}
+   if(page.price!==null&&page.price!==card.price){card.price=page.price;if(raw)raw.price=page.price;touched=true;}
+   if(page.categories?.length&&!card.categories?.length){card.categories=page.categories;if(raw)raw.categories=page.categories;touched=true;}
    if(!card.description&&page.description){card.description=page.description;touched=true;}
    card.specifications=specs;card.provenance={...card.provenance,siteCrawl:{at,url:page.url}};if(touched)counts.updated++;
   }else{
-   const raw={id:prefix+page.sku,name:page.name,description:page.description,categories:[],tags:[],specifications:{...page.extra,...(page.author&&{author:page.author}),...(page.publisher&&{publisher:page.publisher}),...(page.isbn&&{isbn:String(page.isbn)})},url:page.url,image:page.image,price:page.price,currency:page.currency,stockStatus:page.stockStatus,status:'ACTIVE',source:'site-crawl'};
+   const raw={id:prefix+page.sku,name:page.name,description:page.description,categories:page.categories||[],tags:[],specifications:{...page.extra,...(page.author&&{author:page.author}),...(page.publisher&&{publisher:page.publisher}),...(page.isbn&&{isbn:String(page.isbn)})},url:page.url,image:page.image,price:page.price,currency:page.currency,stockStatus:page.stockStatus,status:'ACTIVE',source:'site-crawl'};
    const c=processProduct(raw,client);c.provenance={...c.provenance,siteCrawl:{at,url:page.url}};cards.push(c);p.catalog.products.push(raw);byNumber.set(page.sku,c);counts.added++;
   }
  }
  p.productCards=cards;p.searchIndex=buildSearchIndex(cards,'crawl-'+Date.now());delete p.vectorIndex;p.productCardsProfileHash=hash(profile);p.mongoPolicyDirty=true;
- p.siteCrawl={mergedAt:new Date().toISOString(),pages:Object.keys(state.products||{}).length,...counts};
+ p.siteCrawl={mergedAt:new Date().toISOString(),pages:Object.keys(state.products||{}).length,productRevision:state.productRevision||0,...counts};
  return counts;
 }
 
