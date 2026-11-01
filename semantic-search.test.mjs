@@ -117,3 +117,26 @@ test('lexicalFirst: index matches answer even long requests without the model; e
  await s({query:'כיסוי ארנק לגלקסי S26 בלי שחור'});assert.ok(calls>0,'a negation goes to the model');
  const before=calls;await s({query:'מטען אלחוטי לרכב מהיר'});assert.ok(calls>before,'no index match: the model is the fallback');
 });
+
+test('nothing fits: the selector\'s own alternatives answer, with no second selection call',async()=>{
+ const stages=[],schemas=[];const search=createSearchService(products,client,async({stage,schema})=>{stages.push(stage);schemas.push(schema);return {data:stage==='interpret'?{...plan,requirements:['קומקום'],terms:['צלחת']}:{matches:[],alternatives:[{id:'1',reason:'קרוב בסוג המוצר',missing:['קומקום']},{id:'זר',reason:'x',missing:[]}]}};},{lightweightRouter:false});
+ const r=await search({query:'קומקום חשמלי נירוסטה גדול במיוחד'});
+ assert.deepEqual(stages,['interpret','select']);assert.ok(schemas[1].properties.alternatives);
+ assert.equal(r.metadata.phase,'closest-alternatives');assert.equal(r.metadata.rankedByModel,true);
+ assert.deepEqual(r.matches.map(p=>[p.id,p.matchQuality,p.alternativeReason]),[['1','alternative','קרוב בסוג המוצר']]);assert.equal(r.alternatives,undefined);
+});
+test('the selector gave no alternatives: the separate closest call still answers',async()=>{
+ const stages=[];const search=createSearchService(products,client,async({stage})=>{stages.push(stage);return {data:stage==='interpret'?{...plan,requirements:['קומקום'],terms:['צלחת']}:stages.length===2?{matches:[],alternatives:[]}:{matches:[{id:'1',reason:'קרוב',missing:[]}]}};},{lightweightRouter:false});
+ const r=await search({query:'קומקום חשמלי נירוסטה גדול במיוחד'});
+ assert.deepEqual(stages,['interpret','select','select']);assert.deepEqual(r.matches.map(p=>p.id),['1']);
+});
+test('the router runs beside the interpretation, and its answer cancels the deep stage',async()=>{
+ const started=[];let releaseRouter,aborted=false;const gate=new Promise(r=>releaseRouter=r);
+ const search=createSearchService(products,client,async({stage,signal})=>{started.push(stage);
+  if(stage==='route'){await gate;return {data:{route:'lexical',rewrites:['מגבת'],message:''}};}
+  if(stage==='interpret')return new Promise((_,reject)=>signal.addEventListener('abort',()=>{aborted=true;reject(Error('aborted'));}));
+  throw Error('selection must not run');});
+ const pending=search({query:'מגבות'});await new Promise(r=>setTimeout(r,20));
+ assert.deepEqual(started.sort(),['interpret','route']);releaseRouter();
+ const r=await pending;assert.equal(r.metadata.phase,'router-lexical');assert.deepEqual(r.matches.map(p=>p.id),['2']);assert.equal(aborted,true);
+});
