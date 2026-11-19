@@ -10,6 +10,7 @@ const fail=(message,status=400)=>Object.assign(Error(message),{status});
 const fingerprint=p=>createHash('sha256').update(JSON.stringify(p)).digest('hex');
 const names=['overview','find_products','facet','get_product','categories','fields','field_values','suggest','search','measure_search','read_engine','inspect_query','shopper_clicks','list_rules','add_spelling','add_synonyms','link_term','remove_rule','rank_rule','tag_products','configure_search','db_fields','db_search','add_example','check_examples','list_versions','fetch_store_page'];
 const text=(v,max=200)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
+const MAX_MODEL_CALLS=24;
 
 export async function customerTenant(apiKey,dbName){
  const byDbName=dbName!==undefined;
@@ -74,10 +75,17 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
    };
    let stopped=false;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10*60*1000);
    res.on('close',()=>{if(!res.writableEnded){stopped=true;controller.abort();}});
-   let calls=0;const usage=[];
-   const guard=fn=>async(prompt,options={})=>{
+   let calls=0;const usage=[],findings=[];
+   const complete=({summary,actions,draft})=>{
+    timings.elapsedMs=performance.now()-started;timings.firstTextMs??=timings.elapsedMs;
+    send({type:'done',summary,actions,draft,usage,modelCalls:calls,engine:'tenant-studio',analyticsStatus,timings});
+   };
+   const guard=(fn,isJudge=false)=>async(prompt,options={})=>{
     if(stopped||controller.signal.aborted)throw Object.assign(Error('הריצה נעצרה'),{stopped:true});
-    if(++calls>24)throw Error('הגעת למגבלת קריאות המודל להודעה');
+    if(calls>=MAX_MODEL_CALLS)throw Object.assign(Error('הגעת למגבלת קריאות המודל להודעה'),{code:'MODEL_CALL_LIMIT',retryable:false});
+    calls++;
+    const remaining=MAX_MODEL_CALLS-calls;
+    if(!isJudge&&remaining<6)prompt+=`\nSERVICE CALL BUDGET: ${remaining} model calls remain after this one, shared with the independent reviewer. Conclude with {"message","verify"} now using the evidence already collected so there is room for verification. Explain any unresolved limitation; do not read more engine code or repeat unsuccessful approaches.`;
     // A cancelled HTTP request must not save a draft even if a provider finishes later.
     let cancel;const aborted=new Promise((_,reject)=>{cancel=()=>reject(Object.assign(Error('הריצה נעצרה'),{stopped:true}));controller.signal.addEventListener('abort',cancel,{once:true});});
     timings.firstModelMs??=performance.now()-started;const callStarted=performance.now();timings.modelCalls++;
@@ -87,16 +95,22 @@ export function installCustomerChat(app,{store,drafts,persist,locked,publish,mod
    res.status(200).set({'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
    const send=event=>{if(!stopped&&!res.writableEnded){if(event.type==='answer_delta'&&event.delta)timings.firstTextMs??=performance.now()-started;res.write(JSON.stringify(event)+'\n');}};
    try{
-    const next=await agent(working,message,{model:guard(model()),judge:guard(judge()),toolset:customerTools(current,actions,measured),context:availableAnalytics?{analytics:availableAnalytics}:null,instructions:POLICY,streamAnswers:true,services:{workspaceContext:async ctx=>({...await workspaceContext(ctx,{live:false}),dashboardUser:await readStoreProfile(dbName),shoppersThisWeek:null,analytics:{days:analyticsDays,source:'dashboard_analytics tool; not preloaded'}}),...services()},onEvent:async event=>{if(['answer_delta','answer_reset'].includes(event.type))send(event);else if(['note','tool','tool_done'].includes(event.type))send({type:event.type,id:event.id,name:event.name,text:event.text,ok:event.ok});}});
+    const next=await agent(working,message,{model:guard(model()),judge:guard(judge(),true),toolset:customerTools(current,actions,measured),context:availableAnalytics?{analytics:availableAnalytics}:null,instructions:POLICY,streamAnswers:true,services:{workspaceContext:async ctx=>({...await workspaceContext(ctx,{live:false}),dashboardUser:await readStoreProfile(dbName),shoppersThisWeek:null,analytics:{days:analyticsDays,source:'dashboard_analytics tool; not preloaded'}}),...services()},onEvent:async event=>{if(event.type==='tool_done'&&event.ok&&['search','inspect_query','find_products','facet'].includes(event.name)&&typeof event.text==='string')findings.push(event.text.slice(0,300));if(['answer_delta','answer_reset'].includes(event.type))send(event);else if(['note','tool','tool_done'].includes(event.type))send({type:event.type,id:event.id,name:event.name,text:event.text,ok:event.ok});}});
     if(stopped||controller.signal.aborted)return;
     const answer=next.messages.at(-1),changes=answer?.changes||[];let draft=null;
     if(changes.length){
      const id=randomUUID();await drafts.save({id,dbName,projectId:current.id,base:fingerprint(current),status:'pending',createdAt:new Date().toISOString(),changes,next:{...next,messages:current.messages},request:message});
      draft={id,projectId:current.id,changes,version:next.revisions.at(-1)?.number};
     }
-    timings.elapsedMs=performance.now()-started;timings.firstTextMs??=timings.elapsedMs;
-    send({type:'done',summary:String(answer?.text||''),actions,draft,usage,modelCalls:calls,engine:'tenant-studio',analyticsStatus,timings});
-   }catch(error){send({type:'error',message:error.stopped?'הריצה נעצרה':error.message});}
+    complete({summary:String(answer?.text||''),actions,draft});
+   }catch(error){
+    if(error.code==='MODEL_CALL_LIMIT'&&!stopped&&!controller.signal.aborted){
+     // Keep useful observations, but discard every draft/action: this turn never completed verification.
+     send({type:'answer_reset'});
+     const observed=[...new Set(findings)].slice(-4);
+     complete({summary:'הגעתי למגבלת הבדיקה לפני שהצלחתי להשלים ולאמת פתרון. לא נשמר שום שינוי ולא הוכנה הצעה להפעלה.'+(observed.length?'\n\nממצאים מסביבת הבדיקה בלבד (הטיוטה לא נשמרה):\n'+observed.map(line=>'- '+line).join('\n'):'')+'\n\nאפשר להמשיך בבדיקה ממוקדת של התוצאות הלא רצויות.',actions:[],draft:null});
+    }else send({type:'error',message:error.stopped?'הריצה נעצרה':error.message});
+   }
    finally{clearTimeout(timer);if(!res.writableEnded)res.end();}
   });
  });
