@@ -13,6 +13,10 @@ services:
         value: "true"
       - key: STUDIO_CUSTOMER_API_TOKEN
         sync: false
+      # Optional for immediate search-cache invalidation and existing exact-rule publication.
+      # Use the same Redis as the live search engine.
+      - key: REDIS_URL
+        sync: false
       # Optional JSON mapping of store dbName to its existing project UUID.
       - key: STUDIO_CUSTOMER_PROJECTS
         value: '{}'
@@ -23,6 +27,11 @@ services:
       # Proxy/VPN exit for every scraper (core/egress.mjs); empty = direct.
       - key: STUDIO_SCRAPE_PROXY
         sync: false
+      # Automatic site scans run on Render by default (core/crawl-schedule.mjs). Hours between scans, and dbNames or hosts left out.
+      - key: STUDIO_AUTO_SCAN_HOURS
+        value: "6"
+      - key: STUDIO_AUTO_SCAN_SKIP
+        value: steimatzky
       # Client Shopify apps open the studio here (install + daily product feed, core/shopify-feed.mjs).
       - key: STUDIO_PUBLIC_URL
         value: https://tenant-studio.onrender.com

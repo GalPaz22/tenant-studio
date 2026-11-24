@@ -4,14 +4,15 @@ import {fileURLToPath} from 'node:url';
 
 // The studio controls a tenant's crawl through the shared store: it sets what should happen (desired, settings,
 // target) and reads progress. A crawl worker — on Render, or on this computer with STUDIO_CRAWL_WORKER=local — does the work.
-export const DEFAULT_SETTINGS={rateMs:1000,autoMerge:false,sources:{clicks:true,sitemap:true,catalog:true}};
+export const DEFAULT_SETTINGS={rateMs:1000,concurrency:3,autoMerge:false,sources:{clicks:true,sitemap:true,catalog:true}};
 export const crawlSettings=p=>({...DEFAULT_SETTINGS,...p.crawler,sources:{...DEFAULT_SETTINGS.sources,...p.crawler?.sources}});
 export function validateSettings(input){
  const s={...input};
  if(s.rateMs!==undefined&&(!Number.isInteger(s.rateMs)||s.rateMs<500||s.rateMs>60000))throw Error('קצב הסריקה חייב להיות בין 0.5 ל־60 שניות לדף');
+ if(s.concurrency!==undefined&&(!Number.isInteger(s.concurrency)||s.concurrency<1||s.concurrency>6))throw Error('מספר הדפים במקביל חייב להיות בין 1 ל־6');
  if(s.autoMerge!==undefined&&typeof s.autoMerge!=='boolean')throw Error('מיזוג אוטומטי לא תקין');
  if(s.sources!==undefined&&(typeof s.sources!=='object'||Object.entries(s.sources).some(([k,v])=>!['clicks','sitemap','catalog'].includes(k)||typeof v!=='boolean')))throw Error('מקורות לא תקינים');
- return Object.fromEntries(Object.entries(s).filter(([k])=>['rateMs','autoMerge','sources'].includes(k)));
+ return Object.fromEntries(Object.entries(s).filter(([k])=>['rateMs','concurrency','autoMerge','sources'].includes(k)));
 }
 export const alive=pid=>{if(!Number.isInteger(pid)||pid<=0)return false;try{process.kill(pid,0);return true;}catch(e){return e.code==='EPERM';}};
 
@@ -28,15 +29,15 @@ export function crawlStatus(meta,settings,merged=null,{now=Date.now()}={}){
 // An activated dedicated scraper travels with the job; without one the worker uses the generic JSON-LD extractor.
 // A draft scraper that passed its own validation (name and product key on ≥80% of sample pages) is used too.
 export const scraperReady=s=>!!s?.spec&&(s.status==='active'||s.status==='draft'&&(s.validation?.fill?.name??0)>=0.8&&(s.validation?.fill?.key??0)>=0.8);
-export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,dbName:p.existingClient?.dbName||null,spec:scraperReady(p.scraper)?p.scraper.spec:null};};
-export async function startCrawl(p,store,{reseed=false,rescan=false}={}){
+export const crawlTarget=p=>{if(!p.url||!/^https:/.test(p.url))throw Error('ללקוח אין כתובת אתר HTTPS לסריקה');return {url:p.url,platform:p.platform||null,dbName:p.existingClient?.dbName||null,spec:scraperReady(p.scraper)?p.scraper.spec:null};};
+export async function startCrawl(p,store,{reseed=false,rescan=false,full=false}={}){
  const meta=await store.meta(p.id);
  // Repeated starts must not reset a job that is already queued or running.
  if(meta?.desired==='running')return;
  // A completed queue has nothing left to resume. A normal start refreshes every page;
  // an explicit reseed only discovers pages that have not been collected yet.
- const restart=rescan||!reseed&&(meta?.status==='done'||meta?.total>0&&meta.next>=meta.total);
- await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:restart||reseed||!meta?.total,rescanRequested:restart});
+ const restart=full||rescan||!reseed&&(meta?.status==='done'||meta?.total>0&&meta.next>=meta.total);
+ await store.control(p.id,{desired:'running',settings:crawlSettings(p),target:crawlTarget(p),reseedRequested:restart||reseed||!meta?.total,rescanRequested:restart,fullRescanRequested:full});
 }
 export async function stopCrawl(p,store){const meta=await store.meta(p.id);if(meta?.desired!=='running')throw Error('הסורק לא רץ');await store.control(p.id,{desired:'stopped'});}
 
