@@ -1,0 +1,72 @@
+<li class="product-item semantix-product-card"
+    data-semantix-custom="1"
+    data-semantix-ai="1"
+    data-semantix-injected="1"
+    data-semantix-pid="{{id}}"
+    data-semantix-name="{{name}}"
+    data-stock-status="{{stockStatus}}"
+    data-on-sale="{{onSale}}"
+    data-mode="category"
+    style="opacity: 1; transition: opacity 260ms;">
+
+  <style>
+    /* The grid is the store's: four across, two on a phone. Everything inside the card is the store's own markup and CSS. */
+    ul.product-items:has(> li.semantix-product-card) {
+      display: grid !important;
+      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      gap: 21px !important;
+      align-items: start !important;
+    }
+    @media (max-width: 767px) {
+      ul.product-items:has(> li.semantix-product-card) {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 21px 10px !important;
+      }
+    }
+    li.semantix-product-card { width: 100% !important; min-width: 0 !important; max-width: 100% !important; margin: 0 !important; }
+    /* Slots the skin fills; empty ones take no room */
+    li.semantix-product-card [data-sx-slot]:empty { display: none; }
+  </style>
+
+  <div class="start-product-item">
+    <div class="product details">
+      <div class="product-image"><div class="image">
+        <div class="product-item-photo-shop">
+          <a href="{{url}}" rel="nofollow" class="action product_link" tabindex="0">
+            <span class="product-item-image product-image-container">
+              <span class="product-image-wrapper">
+                <img class="product-image-photo" src="{{image}}" alt="{{name}}" />
+              </span>
+            </span>
+          </a>
+        </div>
+      </div>
+      <div class="product-category-stampa_sale-swatch product-stampa_sale" data-sx-slot="sale" style="--swatch-color:#011231;"></div></div>
+
+      <div class="product-content-wrap">
+        <div class="product-content">
+          <div dir="ltr" lang="en" class="product-category-brand product-brand" data-sx-slot="brand"></div>
+          <div dir="rtl" lang="he" class="product-category-name product-name">
+            <a href="{{url}}" class="action product_link" title="{{name}}">{{name}}</a>
+          </div>
+        </div>
+        <div class="product-price"><div class="product_category_price product_price">
+          <div class="price-box has_special_price price-final_price" data-role="priceBox">
+            <span class="normal-price"><span class="price-container price-final_price tax">
+              <span class="price-label">מחיר מוצר</span>
+              <span data-price-type="finalPrice" class="price-wrapper"><span class="price">{{price}}&nbsp;₪</span></span>
+            </span></span>
+            <span class="old-price sly-old-price" data-semantix-if="onSale"><span class="price-container price-final_price tax">
+              <span class="price-label">מחיר רגיל</span>
+              <span data-price-type="oldPrice" class="price-wrapper"><span class="price">{{regularPrice}}&nbsp;₪</span></span>
+            </span></span>
+          </div>
+        </div></div>
+        <div class="product-bottom-content">
+          <div class="product-category-stampa-swatch product-stampa" data-sx-slot="stamp" style="--swatch-color:#000000;"></div>
+          <div class="product-options-wrapper"><div class="fieldset"><div class="swatch-opt" data-sx-slot="swatches"></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</li>

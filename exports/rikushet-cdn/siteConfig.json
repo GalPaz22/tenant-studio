@@ -1,0 +1,201 @@
+{
+ "siteId": "",
+ "platform": "magento",
+ "enabled": true,
+ "domains": [],
+ "queryParams": [
+  "q"
+ ],
+ "removeSelectors": [],
+ "selectors": {
+  "resultsGrid": [
+   "ul.product-items"
+  ],
+  "productCard": [
+   "li.product-item"
+  ],
+  "noResults": [
+   ".message.info.empty",
+   ".message.notice"
+  ],
+  "pageTitle": [],
+  "resultsRoot": [],
+  "searchInput": "#header-search-input",
+  "productPage": "",
+  "productId": "",
+  "productName": "",
+  "zero": {
+   "enabled": true,
+   "host": [],
+   "gridTag": "ul",
+   "gridClass": "products list items product-items semantix-zero-grid",
+   "columns": {
+    "desktop": 4,
+    "tablet": 2,
+    "mobile": 2
+   },
+   "insert": {
+    "mode": "append",
+    "target": []
+   },
+   "style": {
+    "gapPx": 16,
+    "marginTopPx": 16,
+    "cardWidth": "100%"
+   }
+  }
+ },
+ "nativeCard": {
+  "cloneFromSelector": "li.product-item",
+  "templateHtml": null,
+  "cardTemplate": null,
+  "useCustomTemplate": true,
+  "map": {
+   "titleSelector": "",
+   "priceSelector": "",
+   "imageSelector": "",
+   "linkSelector": ""
+  },
+  "cleanupSelectors": [],
+  "disableAddToCart": true,
+  "disablePostFix": true
+ },
+ "behavior": {
+  "injectPosition": "prepend",
+  "injectCount": 6,
+  "fadeMs": 260,
+  "loaderMinMs": 450,
+  "waitForDomMs": 8000,
+  "loader": true
+ },
+ "consent": {
+  "enabled": false,
+  "storageKey": "semantix_consent_v3",
+  "logoUrl": "https://semantix-ai.com/powered.png",
+  "title": "🍪 חיפוש מותאם אישית",
+  "text": "מאשרים ל־Semantix לשמור סשן לשיפור התוצאות? (בלי אישור עדיין תראה תוצאות חכמות, פשוט בלי session)",
+  "acceptText": "כן, אשר",
+  "declineText": "לא, תודה",
+  "zIndex": 1000000
+ },
+ "clickTracking": {
+  "enabled": true,
+  "trackNativeClicks": true,
+  "addToCartSelector": "#product-addtocart-button, .tocart",
+  "universalMode": true,
+  "universalLinkSelector": "a.product_link",
+  "forceNavDelay": true,
+  "forceNavDelayMs": 80,
+  "queueKey": "semantix_click_q_v1",
+  "queueMax": 25,
+  "cartInterceptor": {
+   "enabled": true,
+   "urlPatterns": [
+    "/checkout/cart/add"
+   ],
+   "checkoutPatterns": [],
+   "productIdField": "product",
+   "quantityField": "qty"
+  }
+ },
+ "placeholderRotate": {
+  "enabled": false,
+  "placeholders": [],
+  "intervalMs": 2400,
+  "fadeMs": 220,
+  "startDelayMs": 600,
+  "pauseOnFocus": true,
+  "onlyIfEmpty": true,
+  "textColor": "#6b7280"
+ },
+ "features": {
+  "rerankBoost": false,
+  "injectIntoGrid": false,
+  "zeroReplace": true,
+  "disabled": false,
+  "shadowMode": false,
+  "fullReplace": true,
+  "autocomplete": true
+ },
+ "abTests": {},
+ "sessionModes": {},
+ "texts": {
+  "loader": ""
+ },
+ "branding": {
+  "logoUrl": "https://semantix-ai.com/powered.png",
+  "loadingText": "Semantix AI מחפש עבורך...",
+  "logoSize": 120,
+  "showLogo": false
+ },
+ "skeleton": {
+  "loadingText": "Loading AI recommendations..."
+ },
+ "autocompleteFooter": {
+  "enabled": false,
+  "text": "מופעל על ידי Semantix AI ✨",
+  "selector": ".autocomplete-dropdown",
+  "fontSize": "13px"
+ },
+ "aiBadge": {
+  "enabled": false,
+  "text": "AI",
+  "position": "top-right",
+  "backgroundColor": "rgba(139, 92, 246, 0.1)",
+  "textColor": "#8b5cf6",
+  "borderColor": "#8b5cf6",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderRadius": "8px",
+  "fontSize": "11px",
+  "fontWeight": "600",
+  "padding": "3px 8px",
+  "boxShadow": "0 4px 12px rgba(139, 92, 246, 0.25)",
+  "zIndex": 10
+ },
+ "debug": {
+  "enabled": false
+ },
+ "zero": {
+  "replaceNoResultsText": "מחפש תוצאות חכמות...",
+  "replaceNoResultsSelector": "",
+  "columns": {
+   "desktop": 4
+  }
+ },
+ "replace": {
+  "searchPath": "^/catalogsearch/result",
+  "hide": [
+   ".products-list-filter-wrapper",
+   ".category-single-filter",
+   ".toolbar",
+   ".category_promotion",
+   ".message.info.empty",
+   ".message.notice"
+  ],
+  "limit": 24,
+  "autoLoadMore": true,
+  "loadingMoreText": "טוען עוד…"
+ },
+ "autocomplete": {
+  "input": "#header-search-input",
+  "hide": [
+   "#search_autocomplete",
+   "div.search_autocomplete",
+   "div.search_autocomplete_wrap"
+  ],
+  "minChars": 2,
+  "display": "grid",
+  "gridLimit": 12,
+  "debounceMs": 250,
+  "root": "#maincontent",
+  "gridTag": "ul",
+  "gridClass": "products list items product-items",
+  "gridWrapClass": "products wrapper PRODUCTS products-PRODUCTS",
+  "title": "תוצאות חיפוש עבור: '{q}'",
+  "titleClass": "page-heading-title"
+ },
+ "addToCart": {
+  "mode": "off"
+ }
+}
