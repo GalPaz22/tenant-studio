@@ -1,0 +1,107 @@
+<li class="product-item rendered semantix-product-card"
+    data-semantix-custom="1"
+    data-semantix-ai="1"
+    data-semantix-injected="1"
+    data-semantix-pid="{{id}}"
+    data-semantix-name="{{name}}"
+    data-stock-status="{{stockStatus}}"
+    data-on-sale="{{onSale}}"
+    style="opacity: 1; transition: opacity 260ms;">
+
+  <style>
+    /* The image keeps its own class: the engine swaps img.product-image-photo for the store's original file (up to 6000 px) */
+    /* As the store's grid: four across, two on a phone */
+    ul.product-items:has(> li.semantix-product-card) {
+      display: grid !important;
+      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      gap: 21px !important;
+      align-items: start !important;
+    }
+    @media (max-width: 767px) {
+      ul.product-items:has(> li.semantix-product-card) {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 21px 10px !important;
+      }
+    }
+    li.semantix-product-card {
+      display: block !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      box-sizing: border-box !important;
+    }
+    li.semantix-product-card .product-image-wrapper {
+      display: block !important;
+      position: relative !important;
+      width: 100% !important;
+      height: auto !important;
+      padding: 0 !important;
+      aspect-ratio: 1 !important;
+      background: #f6f6f6 !important;
+      overflow: hidden !important;
+    }
+    li.semantix-product-card img.semantix-product-photo {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: contain !important;
+      mix-blend-mode: multiply;
+    }
+    li.semantix-product-card .product-content-wrap {
+      display: block !important;
+      padding-top: 10px !important;
+    }
+    li.semantix-product-card .product-name a {
+      color: #1e1e1e;
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    li.semantix-product-card .semantix-prices {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+      font-size: 14px;
+    }
+    li.semantix-product-card .semantix-now {
+      color: #1e1e1e;
+    }
+    li.semantix-product-card[data-on-sale="true"] .semantix-now {
+      color: #f00;
+    }
+    li.semantix-product-card .semantix-was {
+      color: #1e1e1e;
+      text-decoration: line-through;
+    }
+  </style>
+
+  <div class="product details">
+    <div class="product-image">
+      <div class="image">
+        <div class="product-item-photo-shop">
+          <a href="{{url}}" rel="nofollow" class="action product_link" tabindex="0">
+            <span class="product-item-image product-image-container">
+              <span class="product-image-wrapper">
+                <img class="semantix-product-photo" src="{{image}}" alt="{{name}}">
+              </span>
+            </span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="product-content-wrap">
+      <div class="product-content">
+        <div dir="rtl" lang="he" class="product-category-name product-name">
+          <a href="{{url}}" class="action product_link" title="{{name}}">{{name}}</a>
+        </div>
+      </div>
+      <div class="semantix-prices" dir="rtl">
+        <span class="semantix-now">{{price}}&nbsp;₪</span>
+        <span class="semantix-was" data-semantix-if="onSale">{{regularPrice}}&nbsp;₪</span>
+      </div>
+    </div>
+  </div>
+</li>
